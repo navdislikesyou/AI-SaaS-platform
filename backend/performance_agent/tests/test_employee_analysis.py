@@ -1,0 +1,27 @@
+from pathlib import Path
+
+from backend.performance_agent.data_loader import DataLoader
+from backend.performance_agent.analysis.employee_analysis import EmployeeAnalyzer
+
+
+def main():
+
+    project_root = Path(__file__).resolve().parent.parent
+
+    csv_path = (
+        project_root
+        / "data"
+        / "Financials_standardized.csv"
+    )
+
+    loader = DataLoader(str(csv_path))
+
+    df = loader.load()
+
+    analyzer = EmployeeAnalyzer(df)
+
+    analyzer.print_report()
+
+
+if __name__ == "__main__":
+    main()
