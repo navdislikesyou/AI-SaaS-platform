@@ -1,0 +1,60 @@
+# Agent dependencies.
+#
+# Install in addition to requirements.txt:
+#
+#     pip install -r requirements.txt -r requirements-agents.txt
+#
+# These are the ML and document-processing dependencies for the agent
+# packages. They are kept out of requirements.txt so that running the API
+# does not pull roughly 2 GB of PyTorch and CUDA wheels.
+#
+# NOT a resolved lock. Lower bounds are used deliberately: torch, chromadb,
+# sentence-transformers and the langchain 1.x packages have tightly coupled
+# transitive requirements that only a resolver run can pin reliably. Once the
+# agents are installed and verified, generate an exact lock with:
+#
+#     pip install -r requirements-agents.txt
+#     pip freeze > requirements-agents.lock.txt
+#
+# Prerequisite for the Knowledge and Automation agents: Ollama must be running
+# with the model pulled. These packages talk to it over HTTP; they do not
+# bundle a model.
+#
+#     ollama serve
+#     ollama pull llama3.1:8b
+
+# ---- Knowledge Agent ----
+# Retrieval-augmented document question answering.
+torch>=2.14.1
+sentence-transformers>=6.1.0
+chromadb>=1.5.9
+langchain-chroma>=1.1.0
+langchain-community>=0.4.2
+langchain-huggingface>=1.2.2
+langchain-text-splitters>=1.1.3
+
+# Document loaders used by knowledge_agent/loaders/loader.py. Both are
+# required at import time by langchain_community's loader classes.
+pymupdf>=1.28.2
+docx2txt>=0.9
+
+# ---- Knowledge and Automation Agents ----
+# Local generation through Ollama.
+langchain-ollama>=1.1.0
+
+# ---- Performance Analyzer (deferred) ----
+# Not wired to the API yet. Install only when that agent is integrated.
+#
+# pandas is capped below 3.0 on purpose. data_loader.py selects currency
+# columns with `df[column].dtype == "object"`, and pandas 3 makes a dedicated
+# string dtype the default for text columns, so that comparison stops matching
+# and the "$" and "," stripping silently stops running. Lift the cap once the
+# analyzers have been verified against pandas 3.
+pandas>=2.2,<3
+numpy>=2.5.3
+openpyxl>=3.1.5
+matplotlib>=3.11.2
+
+# ---- Streamlit demo dashboard (deferred) ----
+# performance_agent/app.py only. Never imported by the FastAPI app.
+streamlit>=1.65.0
