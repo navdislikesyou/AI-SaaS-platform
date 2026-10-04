@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.company_analysis import CompanyAnalyzer
-from analysis.employee_analysis import EmployeeAnalyzer
-from analysis.department_analysis import DepartmentAnalyzer
-from analysis.product_analysis import ProductAnalyzer
-from analysis.regional_analysis import RegionalAnalyzer
-from analysis.customer_analysis import CustomerAnalyzer
-from analysis.channel_analysis import ChannelAnalyzer
-from analysis.time_analysis import TimeAnalyzer
-from analysis.target_analysis import TargetAnalyzer
+from performance_agent.analysis.channel_analysis import ChannelAnalyzer
+from performance_agent.analysis.company_analysis import CompanyAnalyzer
+from performance_agent.analysis.customer_analysis import CustomerAnalyzer
+from performance_agent.analysis.department_analysis import DepartmentAnalyzer
+from performance_agent.analysis.employee_analysis import EmployeeAnalyzer
+from performance_agent.analysis.product_analysis import ProductAnalyzer
+from performance_agent.analysis.regional_analysis import RegionalAnalyzer
+from performance_agent.analysis.target_analysis import TargetAnalyzer
+from performance_agent.analysis.time_analysis import TimeAnalyzer
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -167,7 +167,7 @@ def generate_visualizations(df):
 
     try:
 
-        from visualization.visualization_engine import (
+        from performance_agent.visualization.visualization_engine import (
             VisualizationEngine
         )
 
@@ -208,7 +208,7 @@ def generate_insights(df):
 
     try:
 
-        from insights.insight_engine import (
+        from performance_agent.insights.insight_engine import (
             InsightEngine
         )
 

@@ -1279,7 +1279,7 @@ class VisualizationEngine:
 
 if __name__ == "__main__":
 
-    from backend.performance_agent.data_loader import (
+    from performance_agent.data_loader import (
         DataLoader
     )
 

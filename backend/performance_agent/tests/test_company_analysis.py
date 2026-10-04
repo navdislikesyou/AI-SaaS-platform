@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from backend.performance_agent.data_loader import DataLoader
-from backend.performance_agent.analysis.company_analysis import CompanyAnalyzer
+from performance_agent.data_loader import DataLoader
+from performance_agent.analysis.company_analysis import CompanyAnalyzer
 
 
 def main():

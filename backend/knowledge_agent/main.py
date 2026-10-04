@@ -4,7 +4,7 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 from pathlib import Path
 
-from backend.knowledge_agent.knowledge_agent import KnowledgeAgent
+from knowledge_agent.knowledge_agent import KnowledgeAgent
 
 
 def main():

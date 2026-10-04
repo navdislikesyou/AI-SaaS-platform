@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.performance_agent.data_loader import DataLoader
+from performance_agent.data_loader import DataLoader
 
 
 def main():

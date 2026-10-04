@@ -885,7 +885,7 @@ class InsightEngine:
 
 
 if __name__ == "__main__":
-    from backend.performance_agent.data_loader import DataLoader
+    from performance_agent.data_loader import DataLoader
 
     project_root = (
         Path(__file__).resolve().parent.parent

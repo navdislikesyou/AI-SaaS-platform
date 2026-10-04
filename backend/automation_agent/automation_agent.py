@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from backend.automation_agent.llm.local_llm import LocalLLM
+from automation_agent.llm.local_llm import LocalLLM
 
 
 class AutomationAgent:

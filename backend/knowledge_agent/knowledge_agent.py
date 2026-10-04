@@ -1,8 +1,8 @@
-from backend.knowledge_agent.loaders.loader import DocumentLoader
-from backend.knowledge_agent.splitter.splitter import DocumentSplitter
-from backend.knowledge_agent.embeddings.embedding_model import EmbeddingModel
-from backend.knowledge_agent.vectordb.chroma_store import ChromaStore
-from backend.knowledge_agent.llm.local_llm import LocalLLM
+from knowledge_agent.loaders.loader import DocumentLoader
+from knowledge_agent.splitter.splitter import DocumentSplitter
+from knowledge_agent.embeddings.embedding_model import EmbeddingModel
+from knowledge_agent.vectordb.chroma_store import ChromaStore
+from knowledge_agent.llm.local_llm import LocalLLM
 
 
 class KnowledgeAgent:

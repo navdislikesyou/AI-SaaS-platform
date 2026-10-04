@@ -1,4 +1,4 @@
-from backend.knowledge_agent.embeddings.embedding_model import EmbeddingModel
+from knowledge_agent.embeddings.embedding_model import EmbeddingModel
 
 embedding_model = EmbeddingModel().get_model()
 

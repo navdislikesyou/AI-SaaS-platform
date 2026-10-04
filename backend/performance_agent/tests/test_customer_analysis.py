@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from backend.performance_agent.data_loader import DataLoader
-from backend.performance_agent.analysis.customer_analysis import (
+from performance_agent.data_loader import DataLoader
+from performance_agent.analysis.customer_analysis import (
     CustomerAnalyzer
 )
 

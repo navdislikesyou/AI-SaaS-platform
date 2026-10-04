@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from backend.performance_agent.data_loader import DataLoader
-from backend.performance_agent.analysis.schema_detector import SchemaDetector
+from performance_agent.data_loader import DataLoader
+from performance_agent.analysis.schema_detector import SchemaDetector
 
 
 def main():

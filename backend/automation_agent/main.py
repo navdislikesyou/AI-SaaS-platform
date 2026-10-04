@@ -1,4 +1,4 @@
-from backend.automation_agent.automation_agent import AutomationAgent
+from automation_agent.automation_agent import AutomationAgent
 
 
 def main():

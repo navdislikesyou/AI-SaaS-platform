@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from backend.knowledge_agent.loaders.loader import DocumentLoader
-from backend.knowledge_agent.splitter.splitter import DocumentSplitter
+from knowledge_agent.loaders.loader import DocumentLoader
+from knowledge_agent.splitter.splitter import DocumentSplitter
 
 
 pdf_path = (

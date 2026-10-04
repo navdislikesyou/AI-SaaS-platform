@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.knowledge_agent.loaders.loader import DocumentLoader
+from knowledge_agent.loaders.loader import DocumentLoader
 
 pdf_path = (
     Path(__file__).parent.parent
