@@ -19,8 +19,18 @@ BASE_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = BASE_DIR / "results"
 VISUALIZATION_DIR = RESULTS_DIR / "visualizations"
 
-RESULTS_DIR.mkdir(exist_ok=True)
-VISUALIZATION_DIR.mkdir(exist_ok=True)
+
+def ensure_results_dirs():
+    """Create the results and visualization output directories.
+
+    Called from run_performance_agent() rather than at import time so that
+    importing this module has no filesystem side effects.
+
+    Returns:
+        None
+    """
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    VISUALIZATION_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def make_json_safe(obj):
@@ -330,6 +340,8 @@ def save_run_summary(
 def run_performance_agent(input_file):
 
     input_file = Path(input_file)
+
+    ensure_results_dirs()
 
     print("\n" + "=" * 70)
     print("PERFORMANCE AGENT")

@@ -1,3 +1,16 @@
+"""Streamlit dashboard for the Performance Agent.
+
+This is a standalone Streamlit script, not an importable module. It executes
+Streamlit calls at module scope, so importing it renders the whole dashboard.
+
+Run it directly:
+
+    streamlit run performance_agent/app.py
+
+Never import this module from the FastAPI application or from an adapter. The
+API surfaces the same results through POST /api/v1/agents/execute instead.
+"""
+
 import json
 from pathlib import Path
 import streamlit as st

@@ -12,12 +12,25 @@ class VisualizationEngine:
         self.df = dataframe.copy()
 
         self.output_dir = Path(output_dir)
+
+        self._prepare_data()
+
+    def ensure_output_dir(self):
+        """Create the visualization output directory.
+
+        Separate from construction so that instantiating the engine has no
+        filesystem side effect. Callers that intend to write charts must
+        call this first.
+
+        Returns:
+            The output directory path.
+        """
         self.output_dir.mkdir(
             parents=True,
             exist_ok=True
         )
 
-        self._prepare_data()
+        return self.output_dir
 
     # ==============================================================
     # DATA PREPARATION
@@ -1101,6 +1114,8 @@ class VisualizationEngine:
     # ==============================================================
 
     def generate_all(self):
+
+        self.ensure_output_dir()
 
         generated = []
 
