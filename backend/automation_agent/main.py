@@ -1,13 +1,22 @@
+from app.core.config import get_settings
 from automation_agent.automation_agent import AutomationAgent
+from automation_agent.llm.local_llm import LocalLLM
 
 
 def main():
+
+    settings = get_settings()
 
     print("=" * 60)
     print("      ENTERPRISE AUTOMATION AGENT")
     print("=" * 60)
 
-    agent = AutomationAgent()
+    agent = AutomationAgent(
+        llm=LocalLLM(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+        ),
+    )
 
     while True:
 

@@ -7,17 +7,22 @@ from knowledge_agent.llm.local_llm import LocalLLM
 
 class KnowledgeAgent:
 
-    def __init__(self):
+    def __init__(self, chroma_path, embedding_model=None, llm=None):
 
         self.loader = DocumentLoader()
 
         self.splitter = DocumentSplitter()
 
-        self.embedding_model = EmbeddingModel().get_model()
+        self.embedding_model = EmbeddingModel(
+            model_name=embedding_model
+        ).get_model()
 
-        self.vector_store = ChromaStore(self.embedding_model)
+        self.vector_store = ChromaStore(
+            self.embedding_model,
+            persist_directory=chroma_path,
+        )
 
-        self.llm = LocalLLM()
+        self.llm = llm or LocalLLM()
 
     def ingest(self, file_path):
 

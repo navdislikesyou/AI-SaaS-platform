@@ -7,17 +7,18 @@ from automation_agent.llm.local_llm import LocalLLM
 
 class AutomationAgent:
 
-    def __init__(self):
+    def __init__(self, employees_file=None, llm=None):
 
-        self.llm = LocalLLM()
+        self.llm = llm or LocalLLM()
 
-        employee_file = (
-            Path(__file__).parent
-            / "data"
-            / "employees.json"
-        )
+        if employees_file is None:
+            employees_file = (
+                Path(__file__).parent
+                / "data"
+                / "employees.json"
+            )
 
-        with open(employee_file, "r", encoding="utf-8") as file:
+        with open(employees_file, "r", encoding="utf-8") as file:
             self.employees = json.load(file)
 
     def parse_instruction(self, instruction):

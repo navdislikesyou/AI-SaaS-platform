@@ -1,14 +1,21 @@
+from pathlib import Path
+
 from langchain_chroma import Chroma
 
 
 class ChromaStore:
 
-    def __init__(self, embedding_model):
+    def __init__(self, embedding_model, persist_directory, collection_name="knowledge_base"):
+
+        self.persist_directory = Path(persist_directory)
+        self.collection_name = collection_name
+
+        self.persist_directory.mkdir(parents=True, exist_ok=True)
 
         self.vector_store = Chroma(
-            collection_name="knowledge_base",
+            collection_name=collection_name,
             embedding_function=embedding_model,
-            persist_directory="./backend/knowledge_agent/data/chroma_db",
+            persist_directory=str(persist_directory),
         )
 
     def index_documents(self, documents):

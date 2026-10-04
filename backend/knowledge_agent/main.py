@@ -4,10 +4,14 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 from pathlib import Path
 
+from app.core.config import get_settings
 from knowledge_agent.knowledge_agent import KnowledgeAgent
+from knowledge_agent.llm.local_llm import LocalLLM
 
 
 def main():
+
+    settings = get_settings()
 
     pdf_path = (
         Path(__file__).parent
@@ -20,7 +24,14 @@ def main():
     print("          ENTERPRISE KNOWLEDGE AGENT")
     print("=" * 60)
 
-    agent = KnowledgeAgent()
+    agent = KnowledgeAgent(
+        chroma_path=settings.resolved_knowledge_chroma_path,
+        embedding_model=settings.knowledge_embedding_model,
+        llm=LocalLLM(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+        ),
+    )
 
     print("\nLoading Knowledge Base...\n")
 

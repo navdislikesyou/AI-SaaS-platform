@@ -8,6 +8,7 @@ variables and, when present, a local ``.env`` file.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -36,6 +37,11 @@ class Settings(BaseSettings):
         automation_agent_enabled: Set once a real Automation Agent is wired in.
         performance_agent_enabled: Set once a real Performance Analyzer is
             wired in.
+        knowledge_chroma_path: Directory backing the Knowledge Agent vector
+            store. Relative paths resolve from the backend directory.
+        knowledge_embedding_model: HuggingFace embedding model identifier.
+        ollama_base_url: Base URL of the local Ollama server.
+        ollama_model: Ollama model tag used for generation.
     """
 
     model_config = SettingsConfigDict(
@@ -65,6 +71,34 @@ class Settings(BaseSettings):
     knowledge_agent_enabled: bool = False
     automation_agent_enabled: bool = False
     performance_agent_enabled: bool = False
+
+    knowledge_chroma_path: Path = Path("knowledge_agent/data/chroma_db")
+    knowledge_embedding_model: str = "BAAI/bge-base-en-v1.5"
+
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1:8b"
+
+    @property
+    def backend_dir(self) -> Path:
+        """Return the backend package directory.
+
+        Agent paths are stored relative to this directory so that they do not
+        depend on the process working directory.
+
+        Returns:
+            The directory containing app/ and the agent packages.
+        """
+        return Path(__file__).resolve().parents[2]
+
+    @property
+    def resolved_knowledge_chroma_path(self) -> Path:
+        """Return the Knowledge Agent vector store directory.
+
+        Returns:
+            An absolute path to the Chroma persistence directory.
+        """
+        path = self.knowledge_chroma_path
+        return path if path.is_absolute() else self.backend_dir / path
 
     @field_validator("cors_origins", mode="before")
     @classmethod

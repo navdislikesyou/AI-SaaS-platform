@@ -16,7 +16,30 @@ from performance_agent.analysis.time_analysis import TimeAnalyzer
 
 
 BASE_DIR = Path(__file__).resolve().parent
-RESULTS_DIR = BASE_DIR / "results"
+
+
+def resolve_results_dir(results_dir=None):
+    """Resolve the directory that analysis output is written to.
+
+    Returns an absolute path so output does not depend on the process working
+    directory.
+
+    Args:
+        results_dir: Optional override. Relative paths resolve against the
+            performance_agent package directory.
+
+    Returns:
+        The results directory path.
+    """
+    if results_dir is None:
+        return BASE_DIR / "results"
+
+    path = Path(results_dir)
+
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+RESULTS_DIR = resolve_results_dir()
 VISUALIZATION_DIR = RESULTS_DIR / "visualizations"
 
 
