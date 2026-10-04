@@ -79,6 +79,7 @@ class TargetAnalyzer:
             "profit",
             "sales_target",
             "profit_target",
+            "units_sold",
         ]
 
         missing = [

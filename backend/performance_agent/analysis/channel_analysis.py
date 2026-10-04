@@ -175,6 +175,7 @@ class ChannelAnalyzer:
             "sales_channel",
             "sales",
             "profit",
+            "units_sold",
         ]
 
         missing = [
@@ -222,6 +223,7 @@ class ChannelAnalyzer:
             "sales_channel",
             "sales",
             "profit",
+            "units_sold",
         ]
 
         missing = [

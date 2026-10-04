@@ -3,8 +3,17 @@ import pandas as pd
 
 class TimeAnalyzer:
 
+    REQUIRED_COLUMNS = {"date"}
+
     def __init__(self, dataframe):
         self.df = dataframe.copy()
+
+        missing = self.REQUIRED_COLUMNS - set(self.df.columns)
+
+        if missing:
+            raise KeyError(
+                f"TimeAnalyzer requires column(s): {sorted(missing)}"
+            )
 
         self.df["date"] = pd.to_datetime(
             self.df["date"],

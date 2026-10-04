@@ -24,13 +24,13 @@ class KnowledgeAgent:
 
         self.llm = llm or LocalLLM()
 
-    def ingest(self, file_path):
+    def ingest(self, file_path, reset=False):
 
         documents = self.loader.load_document(file_path)
 
         chunks = self.splitter.split(documents)
 
-        self.vector_store.index_documents(chunks)
+        return self.vector_store.index_documents(chunks, reset=reset)
 
     def ask(self, question):
 
