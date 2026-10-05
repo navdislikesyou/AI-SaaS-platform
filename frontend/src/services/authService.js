@@ -52,10 +52,15 @@ const DEMO_USERS = {
 };
 
 export const authService = {
-  async login(email, password) {
-    await apiClient.post('/auth/login', { email });
+  async login(email, _password) {
+    try {
+      await apiClient.post('/auth/login', { email });
+    } catch {
+      // Backend auth endpoint is not implemented yet; fallback to demo users
+      console.info('[authService] Backend auth endpoint not active, using demo mode');
+    }
     
-    // Mock logic
+    // Demo user fallback logic
     let selectedUser = DEMO_USERS.owner;
     if (email.toLowerCase().includes('sarah') || email.toLowerCase().includes('hr')) {
       selectedUser = DEMO_USERS.hr_admin;
@@ -66,7 +71,11 @@ export const authService = {
   },
   
   async logout() {
-    await apiClient.post('/auth/logout');
+    try {
+      await apiClient.post('/auth/logout');
+    } catch {
+      // Ignore if endpoint not present
+    }
     return true;
   }
 };

@@ -1,0 +1,646 @@
+/* ==========================================================================
+   AXON ENTERPRISE SAAS THEME
+   Crisp, ergonomic, tier-1 SaaS workbench aesthetic
+   ========================================================================== */
+
+/* App Frame & Layout */
+.saas-workbench {
+  min-height: 100vh;
+  display: flex;
+  background: #09090b;
+  color: #f4f4f5;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Sidebar overhaul */
+.saas-sidebar {
+  width: 260px;
+  background: #0d0d10;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+}
+
+.saas-sidebar-brand {
+  padding: 20px 20px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.saas-brand-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.saas-brand-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #E8FF72, #4A9DC4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #000;
+  font-weight: 800;
+  font-size: 13px;
+  font-family: 'Syne', sans-serif;
+  letter-spacing: -0.5px;
+}
+
+.saas-brand-title {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  color: #fafafa;
+}
+
+.saas-brand-version {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Workspace selector */
+.saas-workspace-pill {
+  margin: 12px 14px 4px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #d4d4d8;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.saas-workspace-pill:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.saas-workspace-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.saas-workspace-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #E8FF72;
+}
+
+/* Nav sections */
+.saas-nav-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.saas-nav-section-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 0 10px 4px;
+}
+
+.saas-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.saas-nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  font-size: 0.825rem;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.saas-nav-link:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.saas-nav-link.active {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+.saas-nav-link-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.saas-nav-link-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.saas-nav-link.active .saas-nav-link-badge {
+  background: rgba(232, 255, 114, 0.15);
+  color: #E8FF72;
+}
+
+/* Sidebar Footer */
+.saas-sidebar-footer {
+  padding: 14px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: #09090b;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.saas-telemetry-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.saas-telemetry-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.saas-user-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.saas-user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.saas-user-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.saas-user-details {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.saas-user-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #f4f4f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saas-user-role {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.saas-signout-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+}
+
+.saas-signout-btn:hover {
+  color: #ff5a00;
+  background: rgba(255, 90, 0, 0.1);
+}
+
+/* ==========================================================================
+   MAIN CONTENT AREA
+   ========================================================================== */
+
+.saas-main-container {
+  margin-left: 260px;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top App Bar */
+.saas-topbar {
+  height: 56px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(9, 9, 11, 0.85);
+  backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+}
+
+.saas-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.saas-breadcrumb-item {
+  color: rgba(255, 255, 255, 0.5);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.saas-breadcrumb-item:hover {
+  color: #fff;
+}
+
+.saas-breadcrumb-sep {
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 0.7rem;
+}
+
+.saas-breadcrumb-active {
+  color: #f4f4f5;
+  font-weight: 500;
+}
+
+.saas-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.saas-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.saas-status-chip.online {
+  color: #E8FF72;
+  border-color: rgba(232, 255, 114, 0.25);
+  background: rgba(232, 255, 114, 0.05);
+}
+
+.saas-status-chip.offline {
+  color: #ff5a00;
+  border-color: rgba(255, 90, 0, 0.25);
+  background: rgba(255, 90, 0, 0.05);
+}
+
+.saas-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.saas-status-chip.online .saas-pulse-dot {
+  background: #E8FF72;
+  box-shadow: 0 0 6px #E8FF72;
+}
+
+.saas-status-chip.offline .saas-pulse-dot {
+  background: #ff5a00;
+  box-shadow: 0 0 6px #ff5a00;
+}
+
+/* Page Body Layout */
+.saas-page-body {
+  padding: 28px;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Page Header (Subtle, sleek, non-AI) */
+.saas-page-header {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.saas-page-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.saas-page-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #fafafa;
+  letter-spacing: -0.02em;
+}
+
+.saas-page-subtitle {
+  font-size: 0.825rem;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.4;
+}
+
+/* Tabs Header */
+.saas-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 24px;
+}
+
+.saas-tab-btn {
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saas-tab-btn:hover {
+  color: #fff;
+}
+
+.saas-tab-btn.active {
+  color: #fff;
+  border-bottom-color: #E8FF72;
+  font-weight: 600;
+}
+
+/* Interactive Workbench Grid */
+.saas-workbench-grid {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 24px;
+}
+
+@media (max-width: 1080px) {
+  .saas-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Card components */
+.saas-card {
+  background: #111114;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.saas-card-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.saas-card-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fafafa;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saas-card-body {
+  padding: 18px;
+}
+
+/* Input Fields & Textareas */
+.saas-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.saas-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.saas-input, .saas-textarea {
+  background: #09090b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: #fafafa;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  outline: none;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.saas-input:focus, .saas-textarea:focus {
+  border-color: #E8FF72;
+  box-shadow: 0 0 0 2px rgba(232, 255, 114, 0.15);
+}
+
+.saas-textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
+/* Buttons */
+.saas-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+  font-family: 'Inter', sans-serif;
+}
+
+.saas-btn-primary {
+  background: #E8FF72;
+  color: #000000;
+  font-weight: 600;
+}
+
+.saas-btn-primary:hover {
+  background: #d4eb5f;
+  transform: translateY(-1px);
+}
+
+.saas-btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fafafa;
+}
+
+.saas-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Data Table */
+.saas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.saas-table th {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.45);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.saas-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: #e4e4e7;
+}
+
+.saas-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Omnibox Command Console */
+.saas-omnibox {
+  background: #111114;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 24px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+}
+
+.saas-omnibox:focus-within {
+  border-color: #E8FF72;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(232, 255, 114, 0.15);
+}
+
+.saas-omnibox-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.saas-omnibox-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 1rem;
+  color: #fafafa;
+  font-family: 'Inter', sans-serif;
+}
+
+.saas-omnibox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saas-target-chip {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}

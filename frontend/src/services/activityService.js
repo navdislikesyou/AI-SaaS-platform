@@ -40,12 +40,20 @@ const COMM_SCHEDULE = [
 
 export const activityService = {
   async getRecentActivity() {
-    await apiClient.get('/activity/recent');
-    return ACTIVITY_FEED;
+    try {
+      const res = await apiClient.get('/activity/recent');
+      return res?.data || ACTIVITY_FEED;
+    } catch {
+      return ACTIVITY_FEED;
+    }
   },
   
   async getCommunicationSchedule() {
-    await apiClient.get('/communication/schedule');
-    return COMM_SCHEDULE;
+    try {
+      const res = await apiClient.get('/communication/schedule');
+      return res?.data || COMM_SCHEDULE;
+    } catch {
+      return COMM_SCHEDULE;
+    }
   }
 };
