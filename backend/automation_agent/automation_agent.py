@@ -52,8 +52,11 @@ class AutomationAgent:
 
         date = "Not Specified"
 
+        # A day number followed by a word, e.g. "5 March" or "12 April 2026".
+        # The negative lookahead rejects "9 AM" / "9 pm", which otherwise match
+        # because AM and PM are words: without it a time gets read as the date.
         date_match = re.search(
-            r"\d{1,2}\s+[A-Za-z]+(?:\s+\d{4})?",
+            r"\d{1,2}\s+(?!(?:AM|PM)\b)[A-Za-z]+(?:\s+\d{4})?",
             instruction,
             re.IGNORECASE,
         )
@@ -94,15 +97,38 @@ class AutomationAgent:
         # Attendees
         # ------------------------
 
+        # Full name first, then first name as a fallback. Matching any name
+        # part made a shared surname collide: "Navneet Verma" also matched
+        # "Pulkita Verma" because both contain "verma". Requiring the full name
+        # keeps that unambiguous while still allowing "Omkar" to resolve to
+        # "Omkar Shenwai".
         attendees = []
+
+        matched = set()
 
         for employee in self.employees:
 
-            name_parts = employee["name"].lower().split()
+            name = employee["name"].lower()
 
-            if any(part in text for part in name_parts):
+            if name in text:
 
                 attendees.append(employee["name"])
+
+                matched.add(name)
+
+        for employee in self.employees:
+
+            name = employee["name"].lower()
+
+            if name in matched:
+
+                continue
+
+            if name.split()[0] in text:
+
+                attendees.append(employee["name"])
+
+                matched.add(name)
 
         return {
             "title": title,
