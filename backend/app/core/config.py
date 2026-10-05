@@ -42,6 +42,15 @@ class Settings(BaseSettings):
         knowledge_embedding_model: HuggingFace embedding model identifier.
         ollama_base_url: Base URL of the local Ollama server.
         ollama_model: Ollama model tag used for generation.
+        knowledge_agent_timeout_seconds: Wall-clock budget for one Knowledge
+            Agent operation. Sized for CPU-bound generation plus embedding.
+        automation_agent_timeout_seconds: Wall-clock budget for one Automation
+            Agent operation.
+        performance_agent_timeout_seconds: Wall-clock budget for one Performance
+            Analyzer operation. Unused until that agent is connected.
+        agent_max_concurrency: Upper bound on agent operations executing at
+            once, across all agents. Real agents are CPU-bound, so this is
+            deliberately far below anyio's default thread limiter of 40.
     """
 
     model_config = SettingsConfigDict(
@@ -77,6 +86,12 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
+
+    knowledge_agent_timeout_seconds: float = 300.0
+    automation_agent_timeout_seconds: float = 180.0
+    performance_agent_timeout_seconds: float = 600.0
+
+    agent_max_concurrency: int = 4
 
     @property
     def backend_dir(self) -> Path:

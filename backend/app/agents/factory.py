@@ -23,6 +23,11 @@ def build_registry(settings: Settings) -> AgentRegistry:
     catalog endpoint reflects the full platform surface and returns a clean
     503 on execution rather than a 404.
 
+    Adapters for the Knowledge and Automation agents attempt to connect during
+    construction. A connection failure is logged and degrades that adapter to
+    unavailable; it never propagates, so a broken agent cannot stop the API
+    from starting.
+
     Args:
         settings: Application settings.
 
@@ -45,7 +50,13 @@ def default_adapters(settings: Settings) -> list[AgentAdapter]:
         Adapters for the Knowledge, Automation, and Performance agents.
     """
     return [
-        KnowledgeAgentAdapter(enabled=settings.knowledge_agent_enabled),
-        AutomationAgentAdapter(enabled=settings.automation_agent_enabled),
+        KnowledgeAgentAdapter(
+            enabled=settings.knowledge_agent_enabled,
+            settings=settings,
+        ),
+        AutomationAgentAdapter(
+            enabled=settings.automation_agent_enabled,
+            settings=settings,
+        ),
         PerformanceAgentAdapter(enabled=settings.performance_agent_enabled),
     ]

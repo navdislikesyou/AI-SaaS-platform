@@ -2,21 +2,29 @@
 
 FastAPI backend foundation for the AI SaaS Platform.
 
-**The three platform agents are not integrated yet.** They are developed
-separately and connected later through adapters. This backend runs, serves a
-stable API contract, and reports each agent's status honestly.
+**Knowledge and Automation are connected behind their adapters. Performance is
+deferred.** The Knowledge and Automation agents live in this repository under
+`knowledge_agent/` and `automation_agent/`, each exposing a thin dict-in,
+dict-out service that the adapter calls. This backend runs, serves a stable
+API contract, and reports each agent's status honestly — including when an
+agent is enabled but fails to initialize.
 
 ## Agents
 
-| Agent | Purpose | Status |
-|---|---|---|
-| `knowledge` | RAG question answering over PDF/DOCX/TXT documents | Registered, not connected |
-| `automation` | Interprets productivity requests and drafts actions | Registered, not connected |
-| `performance` | Data analytics: KPIs, comparisons, trends, insights | Registered, not connected |
+| Agent | Purpose | Status | Capabilities |
+|---|---|---|---|
+| `knowledge` | RAG question answering over PDF/DOCX/TXT documents | Connected when enabled | `ingest_document`, `query` |
+| `automation` | Interprets productivity requests and drafts actions | Connected when enabled | `draft_action` |
+| `performance` | Data analytics: KPIs, comparisons, trends, insights | Deferred, not connected | — |
 
-No RAG, ChromaDB, embeddings, Llama, Gmail, Google Calendar, or ML code exists
-in this repository. The Performance Analyzer is modelled strictly as data
-analytics, with no predictive or classification behaviour.
+Capabilities listed above are the ones that actually work. Each is backed by a
+service method; anything not listed returns 404 rather than being advertised
+and then failing.
+
+Agent code exists in this repository for Knowledge and Automation. There is no
+Gmail, Google Calendar, or scheduling integration, and no ML code: the
+Performance Analyzer is modelled strictly as data analytics, with no predictive
+or classification behaviour, and is not implemented at all.
 
 ## Setup
 
@@ -27,6 +35,48 @@ python -m venv .venv
 # source .venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
 cp .env.example .env            # optional; defaults work without it
+```
+
+### Agent prerequisites
+
+The Knowledge and Automation agents need extra dependencies and a local Ollama
+server. Without them the API still runs; the agents simply report unavailable.
+
+```bash
+# 1. Agent dependencies. This pulls roughly 2 GB of PyTorch and CUDA wheels,
+#    which is why it is separate from requirements.txt.
+pip install -r requirements.txt -r requirements-agents.txt
+
+# 2. Ollama must be running with the model pulled. Install from
+#    https://ollama.com, then:
+ollama serve
+ollama pull llama3.1:8b
+```
+
+The Ollama model tag must match `OLLAMA_MODEL`. Ollama is reached over HTTP; no
+model is bundled with the packages.
+
+The Knowledge Agent also downloads the `BAAI/bge-base-en-v1.5` embedding model
+from HuggingFace on first use, roughly 440 MB, cached afterwards. This needs
+network access once, and a writable HuggingFace cache.
+
+Then enable the agent in `.env`:
+
+```bash
+KNOWLEDGE_AGENT_ENABLED=true
+AUTOMATION_AGENT_ENABLED=true
+```
+
+Startup never fails because of an agent. If construction raises — missing
+dependency, unreachable Ollama, unreadable Chroma directory — the adapter logs
+the traceback and reports unavailable, and that agent's calls return 503.
+Check the startup log for `knowledge_adapter_connect_failed` or
+`automation_adapter_connect_failed` to see why.
+
+Verify the agent is live:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/agents
 ```
 
 ## Run
@@ -102,7 +152,7 @@ app/
 │   ├── common.py        APIResponse, ErrorDetail, health, readiness
 │   └── agent.py         agent info, execute request/response
 ├── agents/
-│   ├── base.py          AgentAdapter ABC + PlaceholderAgentAdapter
+│   ├── base.py          AgentAdapter ABC, concurrency limiting, placeholder base
 │   ├── registry.py      AgentRegistry
 │   ├── factory.py       builds the default registry from settings
 │   └── adapters/        knowledge, automation, performance
@@ -156,7 +206,7 @@ Catalog. The frontend can build its agent list from this alone.
         "name": "knowledge",
         "display_name": "Knowledge",
         "available": false,
-        "capabilities": ["ingest_document", "list_documents", "delete_document", "query"],
+        "capabilities": ["ingest_document", "query"],
         "status": "not_connected",
         "description": "Retrieval-augmented question answering ..."
       }
@@ -218,7 +268,27 @@ Agent not connected (current state for all three agents) → **503**:
     "details": {
       "agent": "knowledge",
       "status": "not_implemented",
-      "capabilities": ["ingest_document", "list_documents", "delete_document", "query"]
+      "capabilities": ["ingest_document", "query"]
+    }
+  },
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+Missing payload keys return **422**, not 502. Operation-specific input rules
+live in each adapter's `run()`, since `payload` is an arbitrary JSON object at
+the API boundary:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Operation 'query' requires: question.",
+    "details": {
+      "agent": "knowledge",
+      "operation": "query",
+      "missing": ["question"]
     }
   },
   "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
@@ -252,7 +322,25 @@ environment. See `.env.example`. Notable keys:
 | `API_V1_PREFIX` | `/api/v1` | Versioned API mount point |
 | `CORS_ORIGINS` | localhost:3000, :5173 | Allowed browser origins |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `console` | `LOG_FORMAT=json` for shipping |
-| `*_AGENT_ENABLED` | `false` | Flip to true once an agent is connected |
+| `*_AGENT_ENABLED` | `false` | Set true to attempt constructing that agent at startup |
+| `KNOWLEDGE_CHROMA_PATH` | `knowledge_agent/data/chroma_db` | Vector store directory; relative paths resolve from `backend/` |
+| `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |
+| `KNOWLEDGE_AGENT_TIMEOUT_SECONDS` | `300` | Per-operation budget; exceeding it returns 504 |
+| `AUTOMATION_AGENT_TIMEOUT_SECONDS` | `180` | Per-operation budget; exceeding it returns 504 |
+| `PERFORMANCE_AGENT_TIMEOUT_SECONDS` | `600` | Unused until Performance is connected |
+| `AGENT_MAX_CONCURRENCY` | `4` | Agent operations running at once, across all agents |
+
+Enabling an agent makes the API *attempt* construction, not guarantee it. A
+failure degrades that agent to unavailable rather than blocking startup, so
+`is_available()` reports real state rather than the flag.
+
+Inference is CPU-bound, so the timeout defaults are generous and
+`AGENT_MAX_CONCURRENCY` is deliberately low. A timed-out agent thread cannot be
+killed from outside, so it keeps its concurrency slot until it actually
+finishes; raising the limit buys no extra throughput on a small machine and
+only adds context switching.
 
 Startup fails fast if `ENVIRONMENT=production` with `DEBUG=true` or a wildcard
 CORS origin.
@@ -276,23 +364,51 @@ execute(op, payload)   # async; runs the agent off the event loop
 run(op, payload)       # override this — call the real agent here
 ```
 
-Placeholders extend `PlaceholderAgentAdapter`, advertise their intended
-operations, and report `is_available() == False`. They contain no AI logic.
-`execute()` runs `run()` in a worker thread under a timeout, so a slow real
-agent will not block the event loop once connected.
+`execute()` runs `run()` in a worker thread under a timeout, so a slow agent
+will not block the event loop. Two details matter when connecting a real agent:
+
+**Availability is observed, not configured.** Knowledge and Automation attempt
+construction in `__init__` and set `is_available()` from the outcome. A failure
+is logged and degrades to unavailable. `is_available()` deliberately performs
+no network probe: the agent catalog calls it for every agent on every request,
+so a liveness check there would add latency to every call. A dead Ollama server
+surfaces as a 502 on execute instead.
+
+**Concurrency is bounded across agents.** A worker thread cannot be cancelled
+mid-inference, so each call holds a slot from a shared
+`CapacityLimiter` (`AGENT_MAX_CONCURRENCY`) that is released by the thread
+itself, not by the caller. A timed-out call therefore keeps its slot until its
+thread genuinely finishes, which converts unbounded background CPU burn into a
+bounded queue. The limiter is per event loop, since one belongs to the loop
+that created it.
+
+`PerformanceAgentAdapter` still extends `PlaceholderAgentAdapter`: it
+advertises its intended operations and reports `is_available() == False`,
+containing no AI logic.
 
 ## Integrating a real agent
 
+Knowledge and Automation already follow these steps. They are the reference for
+connecting the Performance Analyzer.
+
 1. Inspect the implementation and note its entry point, whether it is blocking,
    and what it returns.
-2. Override `run()` in the matching adapter to call it, translating the payload
-   and returning a dict.
-3. Set the agent's `*_AGENT_ENABLED=true` in `.env`.
-4. Run `pytest tests/conformance.py` — the contract every adapter must pass.
-5. Verify via `POST /api/v1/agents/execute`.
+2. Add a service class with a dict-in, dict-out interface. Keep `main.py` as a
+   dev script; services never print or read the terminal.
+3. Override `run()` in the matching adapter to validate the payload, then call
+   the service and return its dict. Raise `ValidationFailedError` for missing
+   required keys so bad input returns 422 rather than 502.
+4. Attempt service construction in the adapter's `__init__` inside a try block,
+   including the import. Agent dependencies are optional, so an `ImportError`
+   must degrade to unavailable rather than crash startup.
+5. Set the agent's `*_AGENT_ENABLED=true` in `.env`.
+6. Trim `ADVERTISED_CAPABILITIES` to the operations that actually exist.
+   Declaring an operation that 404s at runtime is worse than not declaring it.
+7. Run `pytest tests/conformance.py` — the contract every adapter must pass.
+8. Verify via `POST /api/v1/agents/execute`.
 
 No route or schema changes are expected. `app/agents/adapters/` is the only
-directory that should need edits.
+backend directory that should need edits.
 
 ## Not implemented (future phases)
 

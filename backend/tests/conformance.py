@@ -12,7 +12,7 @@ import pytest
 from app.agents.adapters.automation import AutomationAgentAdapter
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.adapters.performance import PerformanceAgentAdapter
-from app.agents.base import AgentAdapter
+from app.agents.base import AgentAdapter, PlaceholderAgentAdapter
 from app.core.exceptions import AgentUnavailableError, UnknownOperationError
 
 PLACEHOLDER_ADAPTERS = [
@@ -20,6 +20,37 @@ PLACEHOLDER_ADAPTERS = [
     AutomationAgentAdapter,
     PerformanceAgentAdapter,
 ]
+
+
+class _StubService:
+    """Stand-in for a connected agent service.
+
+    Adapters that build a real service derive availability from whether
+    construction succeeded, so a connected instance cannot be produced by
+    passing ``enabled=True`` alone. Injecting this stub expresses "connected"
+    without loading a model.
+    """
+
+    def __getattr__(self, name: str) -> object:
+        """Return a callable returning a dict for any service method."""
+        return lambda *args, **kwargs: {"stub": name}
+
+
+def connected_adapter(adapter_cls: type[AgentAdapter]) -> AgentAdapter:
+    """Build an adapter that reports itself connected.
+
+    Adapters backed by a real service take an injected service; the remaining
+    placeholder-style adapters take the enabled flag.
+
+    Args:
+        adapter_cls: The adapter class under test.
+
+    Returns:
+        An adapter reporting ``is_available() is True``.
+    """
+    if issubclass(adapter_cls, PlaceholderAgentAdapter):
+        return adapter_cls(enabled=True)
+    return adapter_cls(service=_StubService())
 
 
 @pytest.mark.parametrize("adapter_cls", PLACEHOLDER_ADAPTERS)
@@ -120,7 +151,7 @@ async def test_adapter_rejects_unknown_operation_when_available(
     Args:
         adapter_cls: The adapter class under test.
     """
-    adapter = adapter_cls(enabled=True)
+    adapter = connected_adapter(adapter_cls)
 
     assert adapter.is_available() is True
 
