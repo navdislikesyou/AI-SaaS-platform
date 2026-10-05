@@ -1,529 +1,284 @@
-import json
+"""Performance Agent entry point.
+
+This module is the command-line interface and the full-run pipeline. It
+delegates every step to the focused modules:
+
+    dataset loading   performance_agent.dataset
+    analyzer execution performance_agent.analysis.registry
+    serialization      performance_agent.reporting
+    disk and console   performance_agent.reporting
+    in-memory analytics performance_agent.service
+
+``run_performance_agent`` keeps its original signature and six-key return
+value. Console output is unchanged from the pre-refactor implementation.
+
+Run directly:
+
+    python performance_agent/performance_agent.py data/Financials.csv
+"""
+
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
 import pandas as pd
 
-from performance_agent.analysis.channel_analysis import ChannelAnalyzer
-from performance_agent.analysis.company_analysis import CompanyAnalyzer
-from performance_agent.analysis.customer_analysis import CustomerAnalyzer
-from performance_agent.analysis.department_analysis import DepartmentAnalyzer
-from performance_agent.analysis.employee_analysis import EmployeeAnalyzer
-from performance_agent.analysis.product_analysis import ProductAnalyzer
-from performance_agent.analysis.regional_analysis import RegionalAnalyzer
-from performance_agent.analysis.target_analysis import TargetAnalyzer
-from performance_agent.analysis.time_analysis import TimeAnalyzer
+from performance_agent.analysis.registry import run_analyzers
+from performance_agent.dataset import (
+    load_clean_dataset,
+    load_dataset,
+    standardize_dataframe,
+)
+from performance_agent.reporting import (
+    RESULTS_DIR,
+    VISUALIZATION_DIR,
+    ensure_results_dirs,
+    make_json_safe,
+    print_analysis_footer,
+    print_analysis_header,
+    print_analysis_saved,
+    print_dataset_header,
+    print_insight_failure,
+    print_insight_footer,
+    print_insight_header,
+    print_module_result,
+    print_run_report,
+    print_standardization_header,
+    print_visualization_failure,
+    print_visualization_footer,
+    print_visualization_header,
+    resolve_results_dir,
+    save_json,
+    save_run_summary,
+)
 
-
-BASE_DIR = Path(__file__).resolve().parent
-
-
-def resolve_results_dir(results_dir=None):
-    """Resolve the directory that analysis output is written to.
-
-    Returns an absolute path so output does not depend on the process working
-    directory.
-
-    Args:
-        results_dir: Optional override. Relative paths resolve against the
-            performance_agent package directory.
-
-    Returns:
-        The results directory path.
-    """
-    if results_dir is None:
-        return BASE_DIR / "results"
-
-    path = Path(results_dir)
-
-    return path if path.is_absolute() else BASE_DIR / path
-
-
-RESULTS_DIR = resolve_results_dir()
-VISUALIZATION_DIR = RESULTS_DIR / "visualizations"
-
-
-def ensure_results_dirs():
-    """Create the results and visualization output directories.
-
-    Called from run_performance_agent() rather than at import time so that
-    importing this module has no filesystem side effects.
-
-    Returns:
-        None
-    """
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    VISUALIZATION_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def make_json_safe(obj):
-    if isinstance(obj, dict):
-        return {
-            str(key): make_json_safe(value)
-            for key, value in obj.items()
-        }
-
-    if isinstance(obj, (list, tuple)):
-        return [
-            make_json_safe(value)
-            for value in obj
-        ]
-
-    if hasattr(obj, "item"):
-        try:
-            return make_json_safe(obj.item())
-        except Exception:
-            pass
-
-    if hasattr(obj, "isoformat"):
-        try:
-            return obj.isoformat()
-        except Exception:
-            pass
-
-    return obj
-
-
-def save_json(data, path):
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(
-            make_json_safe(data),
-            file,
-            indent=2,
-            ensure_ascii=False
-        )
-
-
-def load_input_file(file_path):
-    file_path = Path(file_path)
-
-    if not file_path.exists():
-        raise FileNotFoundError(
-            f"Input file not found: {file_path}"
-        )
-
-    extension = file_path.suffix.lower()
-
-    if extension == ".csv":
-        return pd.read_csv(file_path)
-
-    if extension in [".xlsx", ".xls"]:
-        return pd.read_excel(file_path)
-
-    raise ValueError(
-        "Unsupported file type. Use CSV or Excel."
-    )
-
-
-def standardize_dataframe(df):
-    df = df.copy()
-
-    df = df.dropna(how="all")
-
-    df.columns = [
-        str(column).strip()
-        for column in df.columns
-    ]
-
-    df = df.dropna(axis=1, how="all")
-
-    return df
-
-
-ANALYZERS = [
-    ("company", CompanyAnalyzer),
-    ("employee", EmployeeAnalyzer),
-    ("department", DepartmentAnalyzer),
-    ("product", ProductAnalyzer),
-    ("regional", RegionalAnalyzer),
-    ("customer", CustomerAnalyzer),
-    ("channel", ChannelAnalyzer),
-    ("time", TimeAnalyzer),
-    ("target", TargetAnalyzer),
+__all__ = [
+    "ANALYZERS",
+    "RESULTS_DIR",
+    "VISUALIZATION_DIR",
+    "ensure_results_dirs",
+    "generate_insights",
+    "generate_visualizations",
+    "load_dataset",
+    "make_json_safe",
+    "resolve_results_dir",
+    "run_analysis_modules",
+    "run_performance_agent",
+    "save_json",
+    "save_run_summary",
+    "standardize_dataframe",
 ]
 
+#: Analyzer table, re-exported for backwards compatibility. The definition now
+#: lives in performance_agent.analysis.registry.
+from performance_agent.analysis.registry import ANALYZERS  # noqa: E402
 
-def run_analysis_modules(df):
 
-    results = {}
-    successful_modules = []
-    failed_modules = []
+def run_analysis_modules(df: pd.DataFrame) -> tuple[dict, list[str], list[dict]]:
+    """Run every analyzer against a dataset, printing progress.
 
-    print("\n" + "=" * 70)
-    print("RUNNING ANALYSIS MODULES")
-    print("=" * 70)
+    Retained for backwards compatibility with existing callers and check
+    scripts. Prefer :func:`performance_agent.analysis.registry.run_analyzers`,
+    which does not print.
 
-    for module_name, analyzer_class in ANALYZERS:
+    Error handling is unchanged: a failing analyzer is recorded with its raw
+    ``str(error)`` and the run continues.
 
+    Args:
+        df: The prepared dataset.
+
+    Returns:
+        A ``(results, successful_modules, failed_modules)`` tuple.
+    """
+    print_analysis_header()
+
+    def announce(module_name: str) -> None:
         print(f"\nRunning {module_name} analysis...")
 
-        try:
-            analyzer = analyzer_class(df)
-            result = analyzer.analyze()
-
-            results[module_name] = make_json_safe(result)
-            successful_modules.append(module_name)
-
-            print(
-                f"[OK] {module_name} analysis completed"
-            )
-
-        except Exception as error:
-
-            failed_modules.append({
-                "module": module_name,
-                "error": str(error)
-            })
-
-            print(
-                f"[WARN] {module_name} analysis skipped: "
-                f"{error}"
-            )
-
-    print(
-        f"\nCompleted {len(successful_modules)} "
-        f"analysis modules."
+    run = run_analyzers(
+        df,
+        on_start=announce,
+        on_complete=print_module_result,
     )
+
+    print_analysis_footer(run.successful)
 
     return (
-        results,
-        successful_modules,
-        failed_modules
+        run.results,
+        list(run.successful),
+        list(run.failed),
     )
 
 
-def generate_visualizations(df):
+def _save_analysis_results(
+    analysis_results: dict,
+) -> Path:
+    """Write the analysis results JSON and report where it went.
 
-    print("\n" + "=" * 70)
-    print("GENERATING VISUALIZATIONS")
-    print("=" * 70)
+    Args:
+        analysis_results: The combined analyzer output.
+
+    Returns:
+        The path the results were written to.
+    """
+    analysis_results_path = RESULTS_DIR / "analysis_results.json"
+
+    save_json(analysis_results, analysis_results_path)
+
+    print_analysis_saved(analysis_results_path)
+
+    return analysis_results_path
+
+
+def generate_visualizations(df: pd.DataFrame) -> int:
+    """Render charts to disk and report how many were written.
+
+    Args:
+        df: The prepared dataset.
+
+    Returns:
+        The number of PNG files written, or 0 when generation failed.
+    """
+    print_visualization_header()
 
     try:
-
         from performance_agent.visualization.visualization_engine import (
             VisualizationEngine
         )
 
-        engine = VisualizationEngine(
-            df,
-            VISUALIZATION_DIR
-        )
+        engine = VisualizationEngine(df, VISUALIZATION_DIR)
 
         engine.generate_all()
 
-        files = list(
-            VISUALIZATION_DIR.glob("*.png")
+        count = len(
+            list(VISUALIZATION_DIR.glob("*.png"))
         )
 
-        count = len(files)
-
-        print(
-            f"\n[OK] Generated {count} visualizations."
-        )
+        print_visualization_footer(count)
 
         return count
 
     except Exception as error:
-
-        print(
-            f"\n[WARN] Visualization generation failed: "
-            f"{error}"
-        )
+        print_visualization_failure(str(error))
 
         return 0
 
 
-def generate_insights(df):
+def generate_insights(df: pd.DataFrame) -> tuple[dict, int]:
+    """Generate business insights, write them to disk, and count them.
 
-    print("\n" + "=" * 70)
-    print("GENERATING BUSINESS INSIGHTS")
-    print("=" * 70)
+    Args:
+        df: The prepared dataset.
+
+    Returns:
+        An ``(insights, count)`` tuple. On failure the insights are empty and
+        the count is zero.
+    """
+    print_insight_header()
 
     try:
-
-        from performance_agent.insights.insight_engine import (
-            InsightEngine
-        )
+        from performance_agent.insights.insight_engine import InsightEngine
 
         engine = InsightEngine(df)
 
-        result = engine.generate()
+        result = make_json_safe(engine.generate())
 
-        result = make_json_safe(result)
+        insights_path = RESULTS_DIR / "insights.json"
 
-        insights_path = (
-            RESULTS_DIR /
-            "insights.json"
-        )
-
-        save_json(
-            result,
-            insights_path
-        )
+        save_json(result, insights_path)
 
         if isinstance(result, dict):
-
             if "all_insights" in result:
-                count = len(
-                    result["all_insights"]
-                )
-
+                count = len(result["all_insights"])
             elif "insights" in result:
-                count = len(
-                    result["insights"]
-                )
-
+                count = len(result["insights"])
             elif "total_insights" in result:
-                count = int(
-                    result["total_insights"]
-                )
-
+                count = int(result["total_insights"])
             else:
                 count = 0
-
         elif isinstance(result, list):
-
             count = len(result)
-
         else:
-
             count = 0
 
-        print(
-            f"\n[OK] Generated "
-            f"{count} actionable insights."
-        )
-
-        print(
-            f"Saved insights: "
-            f"{insights_path}"
-        )
+        print_insight_footer(count, insights_path)
 
         return result, count
 
     except Exception as error:
-
-        print(
-            f"\n[WARN] Insight generation failed: "
-            f"{error}"
-        )
+        print_insight_failure(str(error))
 
         return {}, 0
 
 
-def save_run_summary(
-    input_file,
-    df,
-    successful_modules,
-    failed_modules,
-    visualization_count,
-    insight_count
-):
+def run_performance_agent(input_file: str | Path) -> dict:
+    """Run the complete pipeline over a dataset file.
 
-    summary = {
-        "input_file": str(input_file),
-        "input_type": Path(
-            input_file
-        ).suffix.lower(),
-        "rows_processed": int(
-            len(df)
-        ),
-        "columns_processed": int(
-            len(df.columns)
-        ),
-        "analysis_modules_completed": len(
-            successful_modules
-        ),
-        "analysis_modules": successful_modules,
-        "failed_modules": failed_modules,
-        "visualizations_generated": (
-            visualization_count
-        ),
-        "actionable_insights": (
-            insight_count
-        ),
-        "results_directory": str(
-            RESULTS_DIR
-        )
-    }
+    Loads the file, standardizes it, runs every analyzer, writes the analysis
+    results, renders charts, generates insights, and writes a run summary.
 
-    summary_path = (
-        RESULTS_DIR /
-        "run_summary.json"
-    )
+    Disk output is written to ``performance_agent/results/``. Callers that
+    need analysis without side effects should use
+    :meth:`performance_agent.service.PerformanceService.analyze` instead.
 
-    save_json(
-        summary,
-        summary_path
-    )
+    A module that fails is recorded in ``failed_modules`` with its raw error
+    text; the run continues.
 
-    return summary_path
+    Args:
+        input_file: Path to a ``.csv``, ``.xlsx``, or ``.xls`` file.
 
-
-def run_performance_agent(input_file):
-
-    input_file = Path(input_file)
+    Returns:
+        A dictionary with ``analysis``, ``insights``, ``successful_modules``,
+        ``failed_modules``, ``visualization_count``, and ``insight_count``.
+    """
+    path = Path(input_file)
 
     ensure_results_dirs()
 
-    print("\n" + "=" * 70)
-    print("PERFORMANCE AGENT")
-    print("=" * 70)
+    df = load_clean_dataset(path)
 
-    print("\nINPUT")
-    print("-" * 70)
+    print_dataset_header(path, df)
 
-    print(
-        f"File : {input_file.name}"
-    )
+    standardized_path = RESULTS_DIR / "standardized_data.csv"
 
-    print(
-        f"Type : {input_file.suffix.lower()}"
-    )
+    df.to_csv(standardized_path, index=False)
 
-    df = load_input_file(
-        input_file
-    )
-
-    print(
-        f"Rows : {len(df)}"
-    )
-
-    print(
-        f"Columns : {len(df.columns)}"
-    )
-
-    print("\nDATA STANDARDIZATION")
-    print("-" * 70)
-
-    df = standardize_dataframe(df)
-
-    standardized_path = (
-        RESULTS_DIR /
-        "standardized_data.csv"
-    )
-
-    df.to_csv(
-        standardized_path,
-        index=False
-    )
-
-    print(
-        f"Standardized columns : "
-        f"{len(df.columns)}"
-    )
-
-    print(
-        f"Saved standardized data: "
-        f"{standardized_path}"
-    )
+    print_standardization_header(df, standardized_path)
 
     (
         analysis_results,
         successful_modules,
-        failed_modules
+        failed_modules,
     ) = run_analysis_modules(df)
 
-    analysis_results_path = (
-        RESULTS_DIR /
-        "analysis_results.json"
+    analysis_results_path = _save_analysis_results(
+        analysis_results
     )
 
-    save_json(
-        analysis_results,
-        analysis_results_path
-    )
+    visualization_count = generate_visualizations(df)
 
-    print(
-        f"\nSaved analysis results: "
-        f"{analysis_results_path}"
-    )
-
-    visualization_count = (
-        generate_visualizations(df)
-    )
-
-    (
-        insights,
-        insight_count
-    ) = generate_insights(df)
+    insights, insight_count = generate_insights(df)
 
     summary_path = save_run_summary(
-        input_file,
+        path,
         df,
         successful_modules,
         failed_modules,
         visualization_count,
-        insight_count
+        insight_count,
     )
 
-    print("\n" + "=" * 70)
-    print("PERFORMANCE AGENT COMPLETE")
-    print("=" * 70)
-
-    print(
-        f"\nInput file              : "
-        f"{input_file.name}"
+    print_run_report(
+        path,
+        df,
+        analysis_results_path,
+        successful_modules,
+        failed_modules,
+        visualization_count,
+        insight_count,
+        summary_path,
     )
-
-    print(
-        f"Rows processed          : "
-        f"{len(df)}"
-    )
-
-    print(
-        f"Analysis modules        : "
-        f"{len(successful_modules)}"
-    )
-
-    print(
-        f"Visualizations          : "
-        f"{visualization_count}"
-    )
-
-    print(
-        f"Actionable insights     : "
-        f"{insight_count}"
-    )
-
-    if failed_modules:
-
-        print(
-            "\nModules with warnings:"
-        )
-
-        for module in failed_modules:
-
-            print(
-                f"  - {module['module']}: "
-                f"{module['error']}"
-            )
-
-    print(
-        "\nResults directory:"
-    )
-
-    print(
-        RESULTS_DIR
-    )
-
-    print(
-        "\nAnalysis results:"
-    )
-
-    print(
-        analysis_results_path
-    )
-
-    print(
-        "\nRun summary:"
-    )
-
-    print(
-        summary_path
-    )
-
-    print("\n" + "=" * 70)
 
     return {
         "analysis": analysis_results,
@@ -531,14 +286,17 @@ def run_performance_agent(input_file):
         "successful_modules": successful_modules,
         "failed_modules": failed_modules,
         "visualization_count": visualization_count,
-        "insight_count": insight_count
+        "insight_count": insight_count,
     }
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """Run the pipeline from the command line.
 
+    Returns:
+        The process exit code: 0 on success, 1 on a usage error or a failure.
+    """
     if len(sys.argv) < 2:
-
         print("\nUsage:")
         print(
             "python performance_agent.py "
@@ -557,22 +315,22 @@ if __name__ == "__main__":
             "data\\Financials.xlsx"
         )
 
-        sys.exit(1)
+        return 1
 
     try:
-
-        run_performance_agent(
-            sys.argv[1]
-        )
+        run_performance_agent(sys.argv[1])
 
     except Exception as error:
-
         print("\n" + "=" * 70)
         print("PERFORMANCE AGENT FAILED")
         print("=" * 70)
 
-        print(
-            f"\nError: {error}"
-        )
+        print(f"\nError: {error}")
 
-        sys.exit(1)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
