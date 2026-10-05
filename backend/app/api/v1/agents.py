@@ -32,11 +32,13 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 AGENT_DESCRIPTIONS: dict[str, str] = {
     "knowledge": (
         "Retrieval-augmented question answering over uploaded documents "
-        "(PDF, DOCX, TXT). Implementation not connected yet."
+        "(PDF, DOCX, TXT). Connected; requires the agent dependencies and a "
+        "local Ollama server."
     ),
     "automation": (
         "Interprets natural-language productivity requests and drafts the "
-        "actions required. External side effects are not performed yet."
+        "actions required. Connected; drafts only, external side effects are "
+        "not performed."
     ),
     "performance": (
         "Data analytics over datasets: KPIs, comparisons, trends, patterns, "

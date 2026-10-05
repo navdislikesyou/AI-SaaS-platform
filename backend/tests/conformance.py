@@ -13,7 +13,12 @@ from app.agents.adapters.automation import AutomationAgentAdapter
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.base import AgentAdapter, PlaceholderAgentAdapter
-from app.core.exceptions import AgentUnavailableError, UnknownOperationError
+from app.core.exceptions import (
+    AgentExecutionError,
+    AgentUnavailableError,
+    UnknownOperationError,
+    ValidationFailedError,
+)
 
 PLACEHOLDER_ADAPTERS = [
     KnowledgeAgentAdapter,
@@ -157,3 +162,178 @@ async def test_adapter_rejects_unknown_operation_when_available(
 
     with pytest.raises(UnknownOperationError):
         await adapter.execute("definitely_not_supported", {})
+
+
+# --------------------------------------------------------------------------
+# Contract for adapters backed by a real agent service
+#
+# The tests above describe what any adapter may do. The ones below describe
+# what an adapter must do once a real agent is connected, which is the state
+# Knowledge and Automation are in. Placeholders are excluded: they have no
+# service to call, so "returns a dict" is not yet a property they can satisfy.
+# --------------------------------------------------------------------------
+
+#: Adapters whose availability is derived from successful construction.
+SERVICE_BACKED_ADAPTERS = [
+    KnowledgeAgentAdapter,
+    AutomationAgentAdapter,
+]
+
+#: A payload that satisfies every operation on the adapters above.
+VALID_PAYLOAD = {
+    "file_path": "hr.pdf",
+    "question": "What is the leave policy?",
+    "instruction": "Schedule a sprint planning on 5 March with Navneet",
+}
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_connected_adapter_returns_a_dictionary(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """Every advertised operation resolves to a dict, never None or an object.
+
+    The API contract serializes ``data`` as JSON, so a non-dict result would
+    either fail to serialize or leak a model object into the response.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+
+    for operation in adapter.capabilities():
+        result = await adapter.execute(operation, dict(VALID_PAYLOAD))
+
+        assert isinstance(result, dict), f"{operation} returned {type(result).__name__}"
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_capabilities_match_operations_that_dispatch(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """Advertised capabilities correspond to operations that actually run.
+
+    Declaring an operation that 404s at runtime is worse than omitting it, so
+    each advertised name must reach ``run`` rather than being refused by the
+    capability check.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+
+    for operation in adapter.capabilities():
+        result = await adapter.execute(operation, dict(VALID_PAYLOAD))
+
+        assert isinstance(result, dict), f"{operation} is advertised but does not run"
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_availability_reflects_constructed_state(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """Availability is decided by whether a service was built, not by a flag.
+
+    An adapter constructed with a service is available; the same class with no
+    service is not. This is the property that makes ``GET /agents`` honest when
+    an agent is enabled but broken.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    assert connected_adapter(adapter_cls).is_available() is True
+    assert adapter_cls().is_available() is False
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_invalid_payload_raises_a_validation_error(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """An empty payload is a 422, not a 502.
+
+    ``payload`` is an arbitrary JSON object at the API boundary, so an
+    operation-specific rule is the adapter's responsibility. A missing key that
+    reaches the agent would surface as 502 and wrongly tell the client its
+    request was fine.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+
+    for operation in adapter.capabilities():
+        with pytest.raises(ValidationFailedError) as exc_info:
+            await adapter.execute(operation, {})
+
+        assert exc_info.value.status_code == 422
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_blank_payload_value_raises_a_validation_error(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """A whitespace-only required value is rejected like a missing one.
+
+    A blank string would otherwise reach the agent and fail there.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+    blank = {key: "   " for key in VALID_PAYLOAD}
+
+    for operation in adapter.capabilities():
+        with pytest.raises(ValidationFailedError):
+            await adapter.execute(operation, blank)
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_agent_failure_is_translated_to_execution_error(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """An exception from the agent becomes a sanitized 502.
+
+    The original message must not survive: agent exceptions routinely carry
+    file paths and internal state that must not reach a client.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+
+    class ExplodingService:
+        def __getattr__(self, name: str) -> object:
+            """Return a method that always raises."""
+
+            def explode(*args: object, **kwargs: object) -> dict[str, object]:
+                raise RuntimeError("internal detail at /secret/path")
+
+            return explode
+
+    adapter = adapter_cls(service=ExplodingService())
+
+    for operation in adapter.capabilities():
+        with pytest.raises(AgentExecutionError) as exc_info:
+            await adapter.execute(operation, dict(VALID_PAYLOAD))
+
+        assert exc_info.value.status_code == 502
+        assert "/secret/path" not in exc_info.value.message
+        assert "internal detail" not in exc_info.value.message
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+def test_describe_matches_actual_availability(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """The prose description agrees with the boolean.
+
+    A catalog entry saying "connected" while ``is_available()`` is False would
+    be worse than either alone.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    connected = connected_adapter(adapter_cls).describe().lower()
+    disconnected = adapter_cls().describe().lower()
+
+    assert "not connected" not in connected
+    assert "not connected" in disconnected
