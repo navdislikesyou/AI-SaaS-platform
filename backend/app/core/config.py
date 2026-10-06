@@ -33,10 +33,14 @@ class Settings(BaseSettings):
         log_format: ``console`` for local development, ``json`` for shipping.
         log_request_body: Whether to log request bodies. Off by default
             because bodies can contain user data.
-        knowledge_agent_enabled: Set once a real Knowledge Agent is wired in.
-        automation_agent_enabled: Set once a real Automation Agent is wired in.
-        performance_agent_enabled: Set once a real Performance Analyzer is
-            wired in.
+        knowledge_agent_enabled: Whether to attempt constructing the Knowledge
+            Agent at startup. A construction failure degrades it to unavailable
+            rather than blocking startup.
+        automation_agent_enabled: Whether to attempt constructing the Automation
+            Agent at startup, with the same failure behaviour.
+        performance_agent_enabled: Whether the Performance Analyzer is listed as
+            available in the agent catalog. It does not gate the job API: jobs
+            run whether or not this flag is set.
         knowledge_chroma_path: Directory backing the Knowledge Agent vector
             store. Relative paths resolve from the backend directory.
         knowledge_embedding_model: HuggingFace embedding model identifier.
@@ -46,8 +50,9 @@ class Settings(BaseSettings):
             Agent operation. Sized for CPU-bound generation plus embedding.
         automation_agent_timeout_seconds: Wall-clock budget for one Automation
             Agent operation.
-        performance_agent_timeout_seconds: Wall-clock budget for one Performance
-            Analyzer operation. Unused until that agent is connected.
+        performance_agent_timeout_seconds: Reserved. Not currently read by any
+            code: the job runner enforces no time limit, so a Performance job
+            runs until it completes or fails and never returns 504.
         agent_max_concurrency: Upper bound on agent operations executing at
             once, across all agents. Real agents are CPU-bound, so this is
             deliberately far below anyio's default thread limiter of 40.

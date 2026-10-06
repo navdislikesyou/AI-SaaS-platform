@@ -8,7 +8,7 @@ Run it directly:
     streamlit run performance_agent/app.py
 
 Never import this module from the FastAPI application or from an adapter. The
-API surfaces the same results through POST /api/v1/agents/execute instead.
+API surfaces the same results through POST /api/v1/performance/jobs instead.
 """
 
 import json

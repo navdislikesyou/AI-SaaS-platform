@@ -42,14 +42,14 @@ docx2txt>=0.9
 # Local generation through Ollama.
 langchain-ollama>=1.1.0
 
-# ---- Performance Analyzer (deferred) ----
-# Not wired to the API yet. Install only when that agent is integrated.
+# ---- Performance Analyzer ----
+# Required for POST /api/v1/performance/jobs. No model and no external service.
 #
-# pandas is capped below 3.0 on purpose. data_loader.py selects currency
-# columns with `df[column].dtype == "object"`, and pandas 3 makes a dedicated
-# string dtype the default for text columns, so that comparison stops matching
-# and the "$" and "," stripping silently stops running. Lift the cap once the
-# analyzers have been verified against pandas 3.
+# pandas is capped below 3.0 on purpose. dataset.py selects currency columns
+# with `df[column].dtype == "object"`, and pandas 3 makes a dedicated string
+# dtype the default for text columns, so that comparison stops matching and the
+# "$" and "," stripping silently stops running. Lift the cap once the analyzers
+# have been verified against pandas 3.
 pandas>=2.2,<3
 numpy>=2.5.3
 openpyxl>=3.1.5

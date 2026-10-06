@@ -9,8 +9,10 @@ Nothing here prints. The console reporting lives in
 :mod:`performance_agent.reporting`, so this module is safe to call from a
 request handler.
 
-Not yet wired to the API. The Performance adapter remains a placeholder and
-every operation still returns 503.
+Served by the API through background jobs rather than the generic agent
+endpoint, because analysis over a real dataset is CPU-bound and long running.
+:class:`app.services.job_manager.JobManager` calls this service; the Performance
+adapter is a catalog entry only.
 """
 
 from __future__ import annotations

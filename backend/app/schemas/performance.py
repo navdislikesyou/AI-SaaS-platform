@@ -4,8 +4,9 @@ The Performance Analyzer runs CPU-intensive analytics over datasets that can
 take tens of seconds, so it is exposed as a job API rather than a synchronous
 request. These models describe that job contract on the wire.
 
-Not yet wired to the agent catalog: Performance no longer advertises
-operations through ``POST /agents/execute``.
+These schemas are separate from ``app/schemas/agent.py`` because Performance
+deliberately advertises no operations through ``POST /agents/execute``: the
+catalog lists it with empty capabilities and points at this job API instead.
 """
 
 from __future__ import annotations

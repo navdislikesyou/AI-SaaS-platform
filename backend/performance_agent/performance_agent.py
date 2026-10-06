@@ -12,9 +12,11 @@ delegates every step to the focused modules:
 ``run_performance_agent`` keeps its original signature and six-key return
 value. Console output is unchanged from the pre-refactor implementation.
 
-Run directly:
+Run as a module from the ``backend`` directory. Invoking the file by path does
+not work: Python then puts ``performance_agent/`` on the import path rather
+than ``backend/``, and the absolute package imports below fail to resolve.
 
-    python performance_agent/performance_agent.py data/Financials.csv
+    python -m performance_agent.performance_agent data/Financials.csv
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """Construction of the default agent registry.
 
 Keeps adapter wiring in one place so startup code and tests build the same
-registry shape. Each adapter's availability is driven by configuration, so
-adding a real implementation later is a constructor change, not a route
-change.
+registry shape. Settings are passed through so each adapter can derive its
+availability and execution limits from configuration rather than hardcoding
+them.
 """
 
 from __future__ import annotations

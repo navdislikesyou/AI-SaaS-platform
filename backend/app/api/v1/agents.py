@@ -73,8 +73,9 @@ def _describe(adapter: AgentAdapter) -> AgentInfo:
     summary="List registered agents",
     description=(
         "Returns every registered agent with its availability and advertised "
-        "capabilities. Agents appear here even when their implementation is "
-        "not connected yet."
+        "capabilities. An agent appears here even when it cannot be executed "
+        "here. The Performance Analyzer is listed with no capabilities because "
+        "it is served as a background job at /api/v1/performance/jobs."
     ),
 )
 async def list_agents(
@@ -138,7 +139,7 @@ async def get_agent(
     status_code=status.HTTP_200_OK,
     responses={
         404: {"description": "Unknown agent or unsupported operation"},
-        503: {"description": "Agent implementation not connected"},
+        503: {"description": "Agent not executable here"},
         502: {"description": "Agent execution failed"},
         504: {"description": "Agent execution timed out"},
     },

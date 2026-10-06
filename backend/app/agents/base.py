@@ -362,19 +362,25 @@ def _limiter_for(max_concurrency: int) -> anyio.CapacityLimiter:
 
 
 class PlaceholderAgentAdapter(AgentAdapter):
-    """Adapter for an agent whose implementation is not available yet.
+    """Adapter that is catalogued but not executable through this endpoint.
+
+    Used when an agent either has no implementation, or has one that is reached
+    through a different route. ``PerformanceAgentAdapter`` is the current case:
+    the Performance Analyzer is fully implemented, but it runs as a background
+    job under ``/api/v1/performance/jobs``, so it must not appear runnable here.
 
     Subclasses declare their name and advertised capabilities. Availability is
-    derived from an explicit ``enabled`` flag so that registering an adapter
-    never implies a working agent behind it.
+    derived from an explicit ``enabled`` flag, which suits this role because
+    there is no construction step that could fail. Adapters backed by a real
+    service derive availability from whether construction succeeded instead.
     """
 
     def __init__(self, enabled: bool = False) -> None:
         """Initialize the placeholder adapter.
 
         Args:
-            enabled: Whether a real implementation is connected. Defaults to
-                False because no agent code exists in the repository yet.
+            enabled: Whether the catalog should present this agent as
+                available. Defaults to False.
         """
         self._enabled = enabled
 
@@ -390,12 +396,13 @@ class PlaceholderAgentAdapter(AgentAdapter):
         """Return a short human-readable status string.
 
         Returns:
-            Either a not-connected notice or a connected notice.
+            Either a connected notice or a notice that the agent is catalogued
+            but cannot be executed here.
         """
         if self._enabled:
             return f"{self.display_name} agent is connected."
         return (
             f"{self.display_name} agent is registered but not connected yet. "
-            "Its implementation is developed separately and will be connected "
-            "through this adapter."
+            "It is not executable through this endpoint; override describe() if "
+            "the agent is served by another route."
         )
