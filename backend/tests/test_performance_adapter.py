@@ -1,17 +1,19 @@
-"""Contract tests for the Performance Analyzer adapter.
+"""Catalog-entry tests for the Performance Analyzer adapter.
 
-Performance is deferred: no service exists, nothing is wired to it, and this
-suite must not change that. It verifies only the current contract, namely that
-the adapter stays honestly unavailable and that the API returns 503 for it.
+The Performance Analyzer is implemented and works, but it is deliberately not
+served through ``POST /api/v1/agents/execute``. Analysis over a real dataset is
+CPU-bound and slow, so it runs as a background job through
+``/api/v1/performance/jobs`` instead.
 
-These tests deliberately avoid loading datasets, generating images, importing
-pandas or matplotlib, or running the analyzers. The Performance Analyzer is
-data analytics with no predictive or classification behaviour, and nothing here
-should imply otherwise.
+This suite pins what the adapter therefore must *not* claim: it advertises no
+capabilities, reports itself unavailable, points clients at the job API, and
+refuses synchronous execution. Those tests deliberately avoid loading datasets,
+generating images, importing pandas or matplotlib, or running the analyzers. The
+Performance Analyzer is data analytics with no predictive or classification
+behaviour, and nothing here should imply otherwise.
 
 Note the asymmetry with the other adapter suites: there is no ``service=``
-injection, because there is no service to inject. If someone later adds one,
-the availability tests here should start failing, which is the intended signal.
+injection, because this adapter is not an execution path.
 """
 
 from __future__ import annotations
@@ -33,8 +35,10 @@ from app.services.orchestrator import Orchestrator
 
 EXECUTE_URL = "/api/v1/agents/execute"
 
-#: Operations the deferred analyzer intends to support. None are implemented.
-INTENDED_CAPABILITIES = {
+#: Operations the Performance Analyzer supports through the job API. None of
+#: them is reachable through /agents/execute, which is why the adapter
+#: advertises none of them.
+JOB_API_OPERATIONS = {
     "load_dataset",
     "compute_kpis",
     "compare_periods",
@@ -95,22 +99,26 @@ def build_client(settings: Settings, adapters: list[Any]) -> AsyncClient:
 
 
 # --------------------------------------------------------------------------
-# Remains deferred
+# Not an execution path
 # --------------------------------------------------------------------------
 
 
 def test_adapter_reports_itself_unavailable(adapter: PerformanceAgentAdapter) -> None:
-    """The deferred adapter is unavailable."""
+    """The adapter is unavailable: it cannot execute anything."""
     assert adapter.is_available() is False
 
 
-def test_adapter_describes_itself_as_not_connected(
+def test_adapter_points_clients_at_the_job_api(
     adapter: PerformanceAgentAdapter,
 ) -> None:
-    """The adapter says so in words, not just in a boolean."""
+    """The description says where the agent is actually served.
+
+    Silence would leave a client guessing; advertising five operations that all
+    fail would be worse.
+    """
     description = adapter.describe()
 
-    assert "not connected" in description.lower()
+    assert "/api/v1/performance/jobs" in description
 
 
 @pytest.mark.xfail(
@@ -157,34 +165,46 @@ def test_run_is_not_implemented(adapter: PerformanceAgentAdapter) -> None:
         adapter.run("analyze", {})
 
 
+@pytest.mark.parametrize("operation", sorted(JOB_API_OPERATIONS))
+async def test_every_job_operation_is_refused_synchronously(
+    adapter: PerformanceAgentAdapter,
+    operation: str,
+) -> None:
+    """No operation works through ``/agents/execute``.
+
+    Each of these runs as a job instead. Accepting one here would mean
+    blocking a request on CPU-bound pandas work.
+    """
+    with pytest.raises(AgentUnavailableError) as exc_info:
+        await adapter.execute(operation, {})
+
+    assert exc_info.value.status_code == 503
+
+
 # --------------------------------------------------------------------------
 # Capability honesty
 # --------------------------------------------------------------------------
 
 
-def test_advertised_capabilities_are_the_intended_set(
+def test_adapter_advertises_no_capabilities(
     adapter: PerformanceAgentAdapter,
 ) -> None:
-    """Capabilities still match the documented intent.
+    """The catalog offers nothing it cannot deliver.
 
-    This is the one place where the Performance adapter legitimately advertises
-    unimplemented operations, because it is a placeholder that has never been
-    connected. Contrast this with Knowledge and Automation, whose capability
-    lists were trimmed to what actually works.
+    Knowledge and Automation advertise only what works. Performance's operations
+    work too, but not through this endpoint, so advertising them here would
+    promise something every request would then fail to provide.
     """
-    assert set(adapter.capabilities()) == INTENDED_CAPABILITIES
+    assert adapter.capabilities() == []
 
 
-def test_capabilities_are_advertised_while_unavailable() -> None:
-    """Capabilities are listed, but nothing is presented as connected.
+def test_advertised_capabilities_exclude_the_job_operations(
+    adapter: PerformanceAgentAdapter,
+) -> None:
+    """No job-API operation leaks into the agent catalog."""
+    advertised = set(adapter.capabilities())
 
-    A placeholder may describe its intent through capabilities; what it must not
-    do is claim readiness. With the flag off the adapter is plainly unavailable.
-    """
-    adapter = PerformanceAgentAdapter()
-
-    assert adapter.capabilities()
-    assert adapter.is_available() is False
+    assert advertised.isdisjoint(JOB_API_OPERATIONS)
 
 
 def test_capabilities_return_a_copy(adapter: PerformanceAgentAdapter) -> None:
@@ -200,7 +220,11 @@ def test_capabilities_return_a_copy(adapter: PerformanceAgentAdapter) -> None:
 
 
 async def test_catalog_marks_the_agent_not_connected(settings: Settings) -> None:
-    """The catalog reports the agent as registered but unavailable."""
+    """The catalog reports the agent as registered but unavailable.
+
+    Unavailable is correct: this endpoint cannot execute it. The description
+    carries the pointer to the job API that can.
+    """
     async with build_client(settings, [PerformanceAgentAdapter()]) as client:
         response = await client.get("/api/v1/agents")
 
@@ -211,24 +235,17 @@ async def test_catalog_marks_the_agent_not_connected(settings: Settings) -> None
     assert agent["name"] == "performance"
     assert agent["available"] is False
     assert agent["status"] == "not_connected"
+    assert agent["capabilities"] == []
+    assert "/api/v1/performance/jobs" in agent["description"]
     assert body["data"]["available_count"] == 0
 
 
-@pytest.mark.parametrize(
-    "operation",
-    [
-        "load_dataset",
-        "compute_kpis",
-        "compare_periods",
-        "analyze",
-        "visualize",
-    ],
-)
-async def test_api_returns_503_for_every_advertised_operation(
+@pytest.mark.parametrize("operation", sorted(JOB_API_OPERATIONS))
+async def test_api_returns_503_for_every_job_operation(
     settings: Settings,
     operation: str,
 ) -> None:
-    """No advertised operation succeeds, because none is implemented."""
+    """No job operation is reachable through the agent endpoint."""
     async with build_client(settings, [PerformanceAgentAdapter()]) as client:
         response = await client.post(
             EXECUTE_URL,

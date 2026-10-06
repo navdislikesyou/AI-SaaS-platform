@@ -20,7 +20,23 @@ from app.core.exceptions import (
     ValidationFailedError,
 )
 
+#: Adapters that are execution paths through /agents/execute. Each advertises
+#: operations and refuses them only when no implementation is connected.
 PLACEHOLDER_ADAPTERS = [
+    KnowledgeAgentAdapter,
+    AutomationAgentAdapter,
+]
+
+#: Adapters that are catalog entries only. The Performance Analyzer is
+#: implemented, but its work is CPU-bound and runs as a background job through
+#: /api/v1/performance/jobs rather than through /agents/execute, so it
+#: advertises nothing here and says where it is actually served.
+CATALOG_ONLY_ADAPTERS = [
+    PerformanceAgentAdapter,
+]
+
+#: Every adapter that must satisfy the shared contract.
+ALL_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
     PerformanceAgentAdapter,
@@ -72,22 +88,35 @@ def test_adapter_reports_a_non_empty_name(adapter_cls: type[AgentAdapter]) -> No
     assert adapter.name.islower()
 
 
-@pytest.mark.parametrize("adapter_cls", PLACEHOLDER_ADAPTERS)
-def test_adapter_advertises_capabilities(adapter_cls: type[AgentAdapter]) -> None:
-    """Adapters advertise capabilities even when unimplemented.
+@pytest.mark.parametrize("adapter_cls", ALL_ADAPTERS)
+def test_capabilities_are_well_formed(adapter_cls: type[AgentAdapter]) -> None:
+    """Every advertised capability is a non-empty string.
+
+    A catalog entry may advertise nothing; what it must never do is advertise
+    something malformed.
 
     Args:
         adapter_cls: The adapter class under test.
     """
-    adapter = adapter_cls()
+    capabilities = adapter_cls().capabilities()
 
-    capabilities = adapter.capabilities()
-
-    assert capabilities
     assert all(isinstance(name, str) and name for name in capabilities)
 
 
 @pytest.mark.parametrize("adapter_cls", PLACEHOLDER_ADAPTERS)
+def test_execution_adapter_advertises_capabilities(adapter_cls: type[AgentAdapter]) -> None:
+    """An adapter that can execute must advertise at least one operation.
+
+    Excludes catalog-only adapters, which are reachable through a different
+    endpoint entirely.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    assert adapter_cls().capabilities()
+
+
+@pytest.mark.parametrize("adapter_cls", ALL_ADAPTERS)
 def test_capabilities_return_a_copy(adapter_cls: type[AgentAdapter]) -> None:
     """Mutating the returned list cannot corrupt adapter state.
 
@@ -114,11 +143,14 @@ def test_adapter_has_display_name(adapter_cls: type[AgentAdapter]) -> None:
     assert adapter.display_name != adapter.name
 
 
-@pytest.mark.parametrize("adapter_cls", PLACEHOLDER_ADAPTERS)
+@pytest.mark.parametrize("adapter_cls", ALL_ADAPTERS)
 async def test_unconnected_adapter_execution_raises_503(
     adapter_cls: type[AgentAdapter],
 ) -> None:
     """Executing against an unconnected adapter raises a 503-class error.
+
+    Catalog-only adapters advertise nothing, so they are probed with a
+    representative operation name rather than from their capability list.
 
     Args:
         adapter_cls: The adapter class under test.
@@ -127,8 +159,12 @@ async def test_unconnected_adapter_execution_raises_503(
 
     assert adapter.is_available() is False
 
+    capabilities = adapter.capabilities()
+
+    operation = capabilities[0] if capabilities else "analyze"
+
     with pytest.raises(AgentUnavailableError) as exc_info:
-        await adapter.execute(adapter.capabilities()[0], {})
+        await adapter.execute(operation, {})
 
     assert exc_info.value.status_code == 503
 
@@ -145,6 +181,24 @@ def test_adapter_describes_not_connected_state(
     description = adapter_cls().describe()
 
     assert "not connected" in description.lower()
+
+
+@pytest.mark.parametrize("adapter_cls", CATALOG_ONLY_ADAPTERS)
+def test_catalog_only_adapter_points_at_its_real_endpoint(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """A catalog-only adapter says where it is actually served.
+
+    Silence would leave a client with an agent that appears registered, offers
+    nothing, and explains nothing.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    description = adapter_cls().describe()
+
+    assert "not connected" not in description.lower()
+    assert "jobs" in description
 
 
 @pytest.mark.parametrize("adapter_cls", PLACEHOLDER_ADAPTERS)

@@ -42,7 +42,8 @@ AGENT_DESCRIPTIONS: dict[str, str] = {
     ),
     "performance": (
         "Data analytics over datasets: KPIs, comparisons, trends, patterns, "
-        "visualizations, and narrative insights. Implementation not connected yet."
+        "visualizations, and narrative insights. Served as background jobs at "
+        "POST /api/v1/performance/jobs, not through this endpoint."
     ),
 }
 
