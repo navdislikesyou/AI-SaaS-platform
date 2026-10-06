@@ -11,21 +11,35 @@ The backend and the AI agents are developed separately. The backend must never
 depend on agent internals; agents plug in through adapters.
 
 Current scope:
-- **Backend foundation** — `backend/app` (FastAPI, agent abstraction, registry,
-  orchestrator). Live.
-- **Agents** — Knowledge (RAG document Q&A), Automation (productivity
-  requests), Performance Analyzer (data analytics). **Not in this repo.** They
-  are connected later through adapters in `backend/app/agents/adapters/`.
+- **Backend** — `backend/app` (FastAPI, agent abstraction, registry, orchestrator,
+  Performance job API). Live.
+- **Agents** — all three are implemented and live in this repository:
+  - **Knowledge** — RAG document Q&A. `backend/knowledge_agent/`. Served
+    synchronously through `POST /api/v1/agents/execute`.
+  - **Automation** — productivity requests, drafting only. `backend/automation_agent/`.
+    Served synchronously through the same endpoint.
+  - **Performance** — data analytics. `backend/performance_agent/`. Served as
+    background jobs through `POST /api/v1/performance/jobs`, not through
+    `/agents/execute`.
+
+The synchronous agents couple to real agent code in
+`backend/app/agents/adapters/`. Performance couples in
+`backend/app/services/job_manager.py` instead, because its analysis is
+CPU-bound and long running.
 
 ## Do Not
 
-- Implement RAG, embeddings, ChromaDB, document parsing, or Llama logic
-- Implement Gmail, Google Calendar, email sending, or scheduling
+- Change the Knowledge Agent's retrieval or generation behaviour without being asked
+- Implement Gmail, Google Calendar, email sending, or scheduling — the
+  Automation Agent drafts and must stay draft-only
 - Add ML (prediction, classification, regression) to the Performance Analyzer
   — it is data analytics only
 - Add database, auth, RBAC, or frontend code without being asked
+- Introduce Celery, Redis, or a database-backed job queue — the Performance job
+  store is intentionally in-process for now
 - Import an agent implementation into a router or the orchestrator
-- Expose stack traces or internal details in API responses
+- Expose stack traces, raw exception text, or internal filesystem paths in API
+  responses
 - Commit `.env`, `.venv/`, model weights, or anything else gitignored
 
 ## Repository Layout
@@ -36,22 +50,27 @@ backend/
     main.py            app factory, lifespan, CORS, middleware
     api/
       deps.py          shared dependencies (auth seam)
-      v1/              router.py, health.py, agents.py
+      v1/              router.py, health.py, agents.py, performance.py
     core/
       config.py        settings; the only module reading env vars
       logging_config.py  logging + request-id correlation
       exceptions.py    AppError hierarchy + handlers
       middleware.py    request id, timing
-    schemas/           common.py, agent.py
+    schemas/           common.py, agent.py, performance.py
     agents/
-      base.py          AgentAdapter ABC, PlaceholderAgentAdapter
+      base.py          AgentAdapter ABC, concurrency limiting, placeholder base
       registry.py      AgentRegistry
       factory.py       default registry from settings
       adapters/        knowledge, automation, performance
     services/
       orchestrator.py  dispatch only
+      job_manager.py   in-process background jobs for Performance
+  knowledge_agent/     RAG agent: loaders, splitter, embeddings, vector store
+  automation_agent/    Automation agent: parser, employee directory, drafting
+  performance_agent/   data analytics: dataset, analyzers, visualizations, insights
   tests/               mirrors app/; fakes.py, conformance.py
   requirements.txt
+  requirements-agents.txt  agent dependencies, installed separately
   pyproject.toml       ruff, mypy, pytest config
   .env.example
   README.md
@@ -136,15 +155,18 @@ mypy app
   They never import an agent implementation or an adapter's internals.
 - The orchestrator resolves and dispatches. It contains no agent logic and
   chooses no LLM-based routing in v1 — the client names the agent.
-- Adapters are the only place coupled to real agent code.
-- All real-agent coupling stays inside `app/agents/adapters/`.
+- Adapters are the only place coupled to real agent code for the synchronous
+  agents. Performance couples in `app/services/job_manager.py` instead.
+- All real-agent coupling stays inside `app/agents/adapters/` or
+  `app/services/job_manager.py`.
 
 ### Error Handling
 - Raise `AppError` subclasses (`core/exceptions.py`); never bare `except:`.
 - Map domain errors to status codes in one place only.
   `UnknownAgentError` → 404, `UnknownOperationError` → 404,
-  `ValidationFailedError` → 422, `AgentExecutionError` → 502,
-  `AgentUnavailableError` → 503, `AgentTimeoutError` → 504.
+  `JobNotFoundError` → 404, `ValidationFailedError` → 422,
+  `AgentExecutionError` → 502, `AgentUnavailableError` → 503,
+  `AgentTimeoutError` → 504.
 - Log full tracebacks server-side; never return them. Error bodies carry only
   `code`, `message`, `details`, and `request_id`.
 - Adapters must not log or echo credentials.
@@ -164,16 +186,22 @@ mypy app
 
 ## Agent Integration
 
-`AgentAdapter` (`app/agents/base.py`) is the seam. `execute()` checks
-availability and operation support, then runs `run()` in a thread under
-`timeout_seconds`.
+`AgentAdapter` (`app/agents/base.py`) is the seam for the synchronous agents.
+`execute()` checks availability and operation support, then runs `run()` in a
+thread under `timeout_seconds`.
 
-To connect a real agent:
-1. Override `run()` in the matching adapter to call it, translating payload in
-   and result out.
-2. Set the agent's `*_AGENT_ENABLED=true` in `.env`.
-3. Pass `pytest tests/conformance.py`.
-4. Verify through `POST /api/v1/agents/execute`.
+Knowledge and Automation follow this path. To connect a similar agent:
+1. Override `run()` in the matching adapter to call the agent's service,
+   translating payload in and result out.
+2. Attempt service construction in the adapter's `__init__` inside a try block,
+   including the import, so a missing optional dependency degrades to
+   unavailable rather than crashing startup.
+3. Raise `ValidationFailedError` for missing or blank payload keys, so bad
+   input returns 422 instead of 502.
+4. Trim `ADVERTISED_CAPABILITIES` to what actually exists.
+5. Set the agent's `*_AGENT_ENABLED=true` in `.env`.
+6. Pass `pytest tests/conformance.py`.
+7. Verify through `POST /api/v1/agents/execute`.
 
 Routes and schemas should not need changes. `tests/conformance.py` is the gate.
 
@@ -181,6 +209,36 @@ Real agent code is blocking and synchronous (Llama, ChromaDB, pandas). The
 adapter's thread offload exists specifically so those calls do not block the
 event loop. Models and vector stores must be initialized once at adapter
 construction, never per request.
+
+A worker thread cannot be cancelled mid-inference, so `base.py` holds a
+concurrency slot that the thread releases when it genuinely finishes, not when
+the caller times out. Do not reintroduce `abandon_on_cancel=True` without that
+slot: repeated timeouts would otherwise pile up unbounded background CPU burn.
+
+## Performance Jobs
+
+Performance is not an execution path. It is a background job API, because
+analysis over a real dataset takes seconds and holding a request open for it is
+the wrong shape.
+
+`POST /api/v1/performance/jobs` validates the request and returns 202.
+`JobManager` (`app/services/job_manager.py`) owns the lifecycle
+(`queued → running → completed | failed`) and calls `PerformanceService` on a
+worker thread via `anyio.to_thread.run_sync`, spawned with
+`asyncio.create_task` so the response returns immediately.
+
+The store is an in-process dictionary. There is no Celery, Redis, or database
+behind it. Do not describe any of those as implemented. Consequences: jobs do
+not survive a restart, and multi-worker deployments cannot serve job polling,
+because a poll can reach a worker that never saw the job.
+
+Keep pandas out of routers. The router validates and delegates; the job manager
+maps operation to a `PerformanceService` method; the service calls the
+analyzers. There is no second implementation of what an operation means.
+
+Redact filesystem paths from any error text returned to a client. Analyzer and
+loader exceptions carry raw `str(error)`, which can contain server paths.
+Sanitize at the API boundary and keep the full text in server logs.
 
 ## Tests
 
@@ -191,6 +249,10 @@ construction, never per request.
 - Keep every test runnable on CPU without a GPU.
 - Assert on status codes and the standard envelope, not on log text.
 - Use `pytest.raises(..., match=...)` for error paths.
+
+Agent-integration tests stay opt-in behind the enable flags
+(`tests/test_agent_integration.py`) so CI never loads a model. Performance job
+tests stub the service, so they neither run pandas nor render the 39 charts.
 
 ## Git
 

@@ -8,6 +8,7 @@ variables and, when present, a local ``.env`` file.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -32,10 +33,29 @@ class Settings(BaseSettings):
         log_format: ``console`` for local development, ``json`` for shipping.
         log_request_body: Whether to log request bodies. Off by default
             because bodies can contain user data.
-        knowledge_agent_enabled: Set once a real Knowledge Agent is wired in.
-        automation_agent_enabled: Set once a real Automation Agent is wired in.
-        performance_agent_enabled: Set once a real Performance Analyzer is
-            wired in.
+        knowledge_agent_enabled: Whether to attempt constructing the Knowledge
+            Agent at startup. A construction failure degrades it to unavailable
+            rather than blocking startup.
+        automation_agent_enabled: Whether to attempt constructing the Automation
+            Agent at startup, with the same failure behaviour.
+        performance_agent_enabled: Whether the Performance Analyzer is listed as
+            available in the agent catalog. It does not gate the job API: jobs
+            run whether or not this flag is set.
+        knowledge_chroma_path: Directory backing the Knowledge Agent vector
+            store. Relative paths resolve from the backend directory.
+        knowledge_embedding_model: HuggingFace embedding model identifier.
+        ollama_base_url: Base URL of the local Ollama server.
+        ollama_model: Ollama model tag used for generation.
+        knowledge_agent_timeout_seconds: Wall-clock budget for one Knowledge
+            Agent operation. Sized for CPU-bound generation plus embedding.
+        automation_agent_timeout_seconds: Wall-clock budget for one Automation
+            Agent operation.
+        performance_agent_timeout_seconds: Reserved. Not currently read by any
+            code: the job runner enforces no time limit, so a Performance job
+            runs until it completes or fails and never returns 504.
+        agent_max_concurrency: Upper bound on agent operations executing at
+            once, across all agents. Real agents are CPU-bound, so this is
+            deliberately far below anyio's default thread limiter of 40.
     """
 
     model_config = SettingsConfigDict(
@@ -65,6 +85,40 @@ class Settings(BaseSettings):
     knowledge_agent_enabled: bool = False
     automation_agent_enabled: bool = False
     performance_agent_enabled: bool = False
+
+    knowledge_chroma_path: Path = Path("knowledge_agent/data/chroma_db")
+    knowledge_embedding_model: str = "BAAI/bge-base-en-v1.5"
+
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1:8b"
+
+    knowledge_agent_timeout_seconds: float = 300.0
+    automation_agent_timeout_seconds: float = 180.0
+    performance_agent_timeout_seconds: float = 600.0
+
+    agent_max_concurrency: int = 4
+
+    @property
+    def backend_dir(self) -> Path:
+        """Return the backend package directory.
+
+        Agent paths are stored relative to this directory so that they do not
+        depend on the process working directory.
+
+        Returns:
+            The directory containing app/ and the agent packages.
+        """
+        return Path(__file__).resolve().parents[2]
+
+    @property
+    def resolved_knowledge_chroma_path(self) -> Path:
+        """Return the Knowledge Agent vector store directory.
+
+        Returns:
+            An absolute path to the Chroma persistence directory.
+        """
+        path = self.knowledge_chroma_path
+        return path if path.is_absolute() else self.backend_dir / path
 
     @field_validator("cors_origins", mode="before")
     @classmethod

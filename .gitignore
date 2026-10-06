@@ -29,6 +29,13 @@ backend/outputs/
 *.gguf
 *.safetensors
 
+# Agent vector stores and generated artifacts
+*.sqlite3
+backend/knowledge_agent/data/chroma_db/
+backend/knowledge_agent/data/documents/
+backend/performance_agent/data/
+backend/performance_agent/results/
+
 # Logs
 *.log
 

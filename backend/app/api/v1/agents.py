@@ -32,15 +32,18 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 AGENT_DESCRIPTIONS: dict[str, str] = {
     "knowledge": (
         "Retrieval-augmented question answering over uploaded documents "
-        "(PDF, DOCX, TXT). Implementation not connected yet."
+        "(PDF, DOCX, TXT). Connected; requires the agent dependencies and a "
+        "local Ollama server."
     ),
     "automation": (
         "Interprets natural-language productivity requests and drafts the "
-        "actions required. External side effects are not performed yet."
+        "actions required. Connected; drafts only, external side effects are "
+        "not performed."
     ),
     "performance": (
         "Data analytics over datasets: KPIs, comparisons, trends, patterns, "
-        "visualizations, and narrative insights. Implementation not connected yet."
+        "visualizations, and narrative insights. Served as background jobs at "
+        "POST /api/v1/performance/jobs, not through this endpoint."
     ),
 }
 
@@ -70,8 +73,9 @@ def _describe(adapter: AgentAdapter) -> AgentInfo:
     summary="List registered agents",
     description=(
         "Returns every registered agent with its availability and advertised "
-        "capabilities. Agents appear here even when their implementation is "
-        "not connected yet."
+        "capabilities. An agent appears here even when it cannot be executed "
+        "here. The Performance Analyzer is listed with no capabilities because "
+        "it is served as a background job at /api/v1/performance/jobs."
     ),
 )
 async def list_agents(
@@ -135,7 +139,7 @@ async def get_agent(
     status_code=status.HTTP_200_OK,
     responses={
         404: {"description": "Unknown agent or unsupported operation"},
-        503: {"description": "Agent implementation not connected"},
+        503: {"description": "Agent not executable here"},
         502: {"description": "Agent execution failed"},
         504: {"description": "Agent execution timed out"},
     },

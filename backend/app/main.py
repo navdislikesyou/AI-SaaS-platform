@@ -33,9 +33,11 @@ The backend exposes stable HTTP contracts and coordinates a set of agents:
 a Knowledge Agent for document question answering, an Automation Agent for
 productivity requests, and a Performance Analyzer for data analytics.
 
-Agents are developed separately and connected through adapters. Until an
-implementation is connected, its agent is listed in the catalog and execution
-returns 503 with a structured explanation.
+Agents are connected through adapters and run synchronously via
+POST /api/v1/agents/execute. The Performance Analyzer is implemented too, but
+its analysis is CPU-bound and long running, so it runs as a background job via
+POST /api/v1/performance/jobs. It appears in the catalog with no capabilities so
+the catalog does not imply it is reachable through /agents/execute.
 """.strip()
 
 

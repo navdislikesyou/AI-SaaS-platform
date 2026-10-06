@@ -22,6 +22,19 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
 
+# The agent packages are developed separately and are not type annotated.
+# `mypy app` follows the adapters' imports into them, so skip analysis of
+# those modules rather than reporting their errors as app failures. Adapters
+# and services are still checked; only the agent internals are skipped.
+[[tool.mypy.overrides]]
+module = [
+    "knowledge_agent.*",
+    "automation_agent.*",
+    "performance_agent.*",
+]
+follow_imports = "skip"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
