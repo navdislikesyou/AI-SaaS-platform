@@ -52,7 +52,6 @@ const ACTION_PIPELINE = [
 export default function AutomationAIPage() {
   const [activeTab, setActiveTab] = useState('studio');
   const [prompt, setPrompt] = useState('');
-  const [activeOp, setActiveOp] = useState('draft_action');
 
   const { execute, isLoading, response, error, executionMeta } = useAgentExecution();
 
@@ -61,9 +60,28 @@ export default function AutomationAIPage() {
     if (!text.trim() || isLoading) return;
     setPrompt(text);
 
-    // Call real FastAPI backend execution endpoint
-    await execute('automation', activeOp, { prompt: text });
+    // The adapter requires `instruction`, not `prompt`.
+    // draft_action is the only implemented operation.
+    await execute('automation', 'draft_action', { instruction: text });
   };
+
+  // Unwrap the execute envelope. useAgentExecution stores the full body:
+  //   response           -> { success, data: A, message, request_id }
+  //   response.data      -> A  = { agent, operation, data: B, duration_ms, ... }
+  //   response.data.data -> B  = { meeting, recipients, email }
+  // Guarded on the operation, and never defaulted, so absent data renders as
+  // nothing rather than as invented meeting details.
+  const automationOp = response?.data;
+  const draft =
+    automationOp?.operation === 'draft_action'
+      ? automationOp.data
+      : null;
+
+  const meeting = draft?.meeting;
+  const recipients = Array.isArray(draft?.recipients)
+    ? draft.recipients
+    : [];
+  const emailBody = draft?.email || '';
 
   return (
     <div className="saas-workbench">
@@ -146,28 +164,22 @@ export default function AutomationAIPage() {
                       <span>What would you like to draft?</span>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      {[
-                        { id: 'draft_action', label: 'Draft Email / Note' },
-                        { id: 'propose_action', label: 'Propose Task Plan' },
-                        { id: 'execute_action', label: 'Execute Task' },
-                      ].map((op) => (
-                        <button
-                          key={op.id}
-                          onClick={() => setActiveOp(op.id)}
-                          style={{
-                            fontSize: '0.72rem',
-                            padding: '3px 10px',
-                            borderRadius: '4px',
-                            background: activeOp === op.id ? '#4A9DC4' : 'rgba(255,255,255,0.05)',
-                            color: activeOp === op.id ? '#000' : 'rgba(255,255,255,0.6)',
-                            border: '1px solid rgba(255,255,255,0.1)',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {op.label}
-                        </button>
-                      ))}
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          padding: '3px 10px',
+                          borderRadius: '4px',
+                          background: '#4A9DC4',
+                          color: '#000',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                        }}
+                      >
+                        Draft Action
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}>
+                        Drafting only — nothing is sent or scheduled.
+                      </span>
                     </div>
                   </div>
 
@@ -226,21 +238,177 @@ export default function AutomationAIPage() {
                   response={response}
                   agentColor="#4A9DC4"
                   simulatedData={
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono', marginBottom: '8px' }}>
-                        SYNTHESIZED ACTION ITEMS:
+                    draft ? (
+                      <div style={{ marginTop: '12px' }}>
+                        {meeting && (
+                          <div
+                            style={{
+                              background: 'rgba(255,255,255,0.03)',
+                              padding: '16px',
+                              borderRadius: '6px',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              marginBottom: '16px',
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                color: '#f4f4f5',
+                                marginBottom: '10px',
+                                fontSize: '0.9rem',
+                              }}
+                            >
+                              {meeting.title}
+                            </div>
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                                gap: '10px',
+                                fontSize: '0.8rem',
+                              }}
+                            >
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    color: 'rgba(255,255,255,0.45)',
+                                    fontFamily: 'JetBrains Mono',
+                                  }}
+                                >
+                                  DATE
+                                </div>
+                                <div style={{ color: '#f4f4f5' }}>{meeting.date}</div>
+                              </div>
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    color: 'rgba(255,255,255,0.45)',
+                                    fontFamily: 'JetBrains Mono',
+                                  }}
+                                >
+                                  TIME
+                                </div>
+                                <div style={{ color: '#f4f4f5' }}>{meeting.time}</div>
+                              </div>
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    color: 'rgba(255,255,255,0.45)',
+                                    fontFamily: 'JetBrains Mono',
+                                  }}
+                                >
+                                  VENUE
+                                </div>
+                                <div style={{ color: '#f4f4f5' }}>{meeting.venue}</div>
+                              </div>
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    color: 'rgba(255,255,255,0.45)',
+                                    fontFamily: 'JetBrains Mono',
+                                  }}
+                                >
+                                  ATTENDEES
+                                </div>
+                                <div style={{ color: '#f4f4f5' }}>
+                                  {meeting.attendees?.length
+                                    ? meeting.attendees.join(', ')
+                                    : 'None'}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {recipients.length > 0 && (
+                          <>
+                            <div
+                              style={{
+                                fontSize: '0.7rem',
+                                color: 'rgba(255,255,255,0.5)',
+                                fontFamily: 'JetBrains Mono',
+                                textTransform: 'uppercase',
+                                marginBottom: '8px',
+                              }}
+                            >
+                              RESOLVED RECIPIENTS:
+                            </div>
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '6px',
+                                marginBottom: '16px',
+                              }}
+                            >
+                              {recipients.map((person) => (
+                                <div
+                                  key={person.email}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: '12px',
+                                    padding: '8px 12px',
+                                    background: 'rgba(255,255,255,0.02)',
+                                    border: '1px solid rgba(255,255,255,0.06)',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                  }}
+                                >
+                                  <span style={{ color: '#f4f4f5' }}>{person.name}</span>
+                                  <span
+                                    style={{
+                                      color: '#4A9DC4',
+                                      fontFamily: 'JetBrains Mono',
+                                      wordBreak: 'break-all',
+                                      textAlign: 'right',
+                                    }}
+                                  >
+                                    {person.email}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        {emailBody && (
+                          <>
+                            <div
+                              style={{
+                                fontSize: '0.7rem',
+                                color: 'rgba(255,255,255,0.5)',
+                                fontFamily: 'JetBrains Mono',
+                                textTransform: 'uppercase',
+                                marginBottom: '8px',
+                              }}
+                            >
+                              DRAFTED EMAIL (NOT SENT):
+                            </div>
+                            <div
+                              style={{
+                                background: 'rgba(255,255,255,0.03)',
+                                padding: '16px',
+                                borderRadius: '6px',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                fontSize: '0.85rem',
+                                lineHeight: 1.6,
+                                color: '#f4f4f5',
+                                whiteSpace: 'pre-wrap',
+                                fontFamily: 'inherit',
+                              }}
+                            >
+                              {emailBody}
+                            </div>
+                          </>
+                        )}
                       </div>
-                      <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', fontSize: '0.85rem', lineHeight: 1.6 }}>
-                        <div style={{ fontWeight: 600, color: '#f4f4f5', marginBottom: '6px' }}>
-                          Draft Output: "{prompt || 'Retro Deliverables'}"
-                        </div>
-                        <ul style={{ paddingLeft: '18px', color: 'rgba(255,255,255,0.75)' }}>
-                          <li>Coordinate architecture sync with infrastructure team</li>
-                          <li>Draft communication briefing for stakeholders</li>
-                          <li>Establish automated verification checklist in staging</li>
-                        </ul>
-                      </div>
-                    </div>
+                    ) : null
                   }
                 />
               </div>
@@ -261,7 +429,7 @@ export default function AutomationAIPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Timeout Limit:</span>
-                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>120.0 seconds</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>180.0 seconds</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Side Effects:</span>

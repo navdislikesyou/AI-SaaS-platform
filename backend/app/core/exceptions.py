@@ -59,7 +59,7 @@ class AppError(Exception):
 class ValidationFailedError(AppError):
     """Raised when a request payload fails validation."""
 
-    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
     error_code = "VALIDATION_ERROR"
 
 

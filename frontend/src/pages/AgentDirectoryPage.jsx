@@ -215,30 +215,54 @@ export default function AgentDirectoryPage() {
                       <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', display: 'block', marginBottom: '6px' }}>
                         Key Features:
                       </span>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                        {agent.capabilities.map((cap) => (
-                          <span
-                            key={cap}
-                            style={{
-                              fontSize: '0.7rem',
-                              padding: '2px 8px',
-                              borderRadius: '4px',
-                              background: 'rgba(255,255,255,0.04)',
-                              border: '1px solid rgba(255,255,255,0.08)',
-                              color: '#d4d4d8',
-                            }}
-                          >
-                            {cap.replace(/_/g, ' ')}
-                          </span>
-                        ))}
-                      </div>
+                      {agent.capabilities?.length ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                          {agent.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              style={{
+                                fontSize: '0.7rem',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                background: 'rgba(255,255,255,0.04)',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                color: '#d4d4d8',
+                              }}
+                            >
+                              {cap.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        // An agent with no capabilities is not broken; it is
+                        // served by a different endpoint. Surface that instead of
+                        // rendering an empty chip row.
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            background: 'rgba(255,255,255,0.04)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            color: '#d4d4d8',
+                          }}
+                        >
+                          {agent.executionPath === 'jobs'
+                            ? 'Runs as a background job'
+                            : 'No operations exposed'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 <div style={{ padding: '12px 18px', borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.01)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)' }}>
-                    {agent.isBackend ? 'Ready to assist' : 'Planned assistant'}
+                    {!agent.isBackend
+                      ? 'Planned assistant'
+                      : agent.executionPath === 'jobs'
+                        ? 'Served as a background job'
+                        : 'Ready to assist'}
                   </span>
 
                   <button

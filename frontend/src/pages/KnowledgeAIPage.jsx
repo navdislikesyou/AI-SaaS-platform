@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useAgents } from '../hooks/useAgents';
 import { useLocation } from 'react-router-dom';
 import {
   BookOpen,
@@ -64,30 +65,156 @@ const CORPUS_DOCUMENTS = [
   },
 ];
 
+const INGESTED_DOCS_KEY = 'saas_knowledge_ingested_docs';
+
+/**
+ * Read documents ingested in a previous session.
+ *
+ * There is no backend endpoint that lists indexed documents, so successful
+ * ingestions are recorded client-side. A missing, corrupt, or unavailable store
+ * degrades to an empty list rather than breaking the page.
+ *
+ * @returns {Array<{filePath: string, timestamp: string, chunkCount?: number}>}
+ */
+function readIngestedDocs() {
+  try {
+    const raw = window.localStorage.getItem(INGESTED_DOCS_KEY);
+
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter((doc) => doc && typeof doc.filePath === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record a successful ingestion and persist it.
+ *
+ * Re-ingesting a path updates its timestamp instead of adding a duplicate.
+ *
+ * @param {{filePath: string, timestamp: string, chunkCount?: number}} doc
+ */
+function registerIngestedDoc(doc) {
+  const existing = readIngestedDocs().filter((entry) => entry.filePath !== doc.filePath);
+
+  const next = [doc, ...existing];
+
+  try {
+    window.localStorage.setItem(INGESTED_DOCS_KEY, JSON.stringify(next));
+  } catch {
+    // Storage unavailable: the list stays in-memory for this session only.
+  }
+
+  return next;
+}
+
+/**
+ * Format an ISO timestamp for display, e.g. "06 Oct 2026, 10:55 PM".
+ *
+ * @param {string} iso
+ * @returns {string}
+ */
+function formatTimestamp(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
+
 export default function KnowledgeAIPage() {
   const location = useLocation();
 
-  const [activeTab, setActiveTab] = useState('query');
+  // Ingestion is the entry point: there is nothing to query until a document
+  // has been indexed.
+  const [activeTab, setActiveTab] = useState('ingest');
   const [query, setQuery] = useState('');
-  const [activeOp, setActiveOp] = useState('query');
+  // ingest_document takes a server-side path. There is no upload endpoint, so
+  // the operator states the path explicitly.
+  const [ingestPath, setIngestPath] = useState('');
+  const [ingestedDocs, setIngestedDocs] = useState(readIngestedDocs);
+  const [selectedDocPath, setSelectedDocPath] = useState('');
 
-  const { execute, isLoading, response, error, executionMeta } = useAgentExecution();
+  // Two independent execution states. query and ingest_document are separate
+  // operations with different payload shapes and different result renderings,
+  // so sharing one hook made each tab display whichever operation ran last.
+  const queryExec = useAgentExecution();
+  const ingestExec = useAgentExecution();
+
+  const { agents } = useAgents();
+  const knowledgeAgent = agents.find((a) => a.id === 'knowledge');
+  const knowledgeCapabilities = knowledgeAgent?.capabilities || [];
 
   React.useEffect(() => {
     if (location.state?.query) {
       setQuery(location.state.query);
-      execute('knowledge', 'query', { question: location.state.query });
+      queryExec.execute('knowledge', 'query', { question: location.state.query });
     }
-  }, [location.state, execute]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   const handleSearch = async (customQuery = null) => {
     const text = customQuery || query;
-    if (!text.trim() || isLoading) return;
+    if (!text.trim() || queryExec.isLoading) return;
     setQuery(text);
 
-    // Real call to FastAPI backend
-    await execute('knowledge', activeOp, { question: text });
+    // Backend query takes { question } only. It runs against the Knowledge
+    // vector store, so no file_path is sent.
+    await queryExec.execute('knowledge', 'query', { question: text });
   };
+
+  const handleIngest = async () => {
+    if (!ingestPath.trim() || ingestExec.isLoading) return;
+
+    const path = ingestPath.trim();
+
+    // ingest_document requires file_path, not question.
+    const result = await ingestExec.execute('knowledge', 'ingest_document', {
+      file_path: path,
+    });
+
+    // Register only what the backend actually indexed.
+    if (result?.success && result?.data?.data?.indexed) {
+      setIngestedDocs(
+        registerIngestedDoc({
+          filePath: path,
+          timestamp: new Date().toISOString(),
+          chunkCount: result.data.data.chunk_count,
+        }),
+      );
+      setSelectedDocPath(path);
+    }
+  };
+
+  // Unwrap the execute envelope. useAgentExecution stores the full body:
+  //   response            -> { success, data: A, message, request_id }
+  //   response.data       -> A  = { agent, operation, data: B, duration_ms, ... }
+  //   response.data.data  -> B  = { answer, sources } for query,
+  //                               { indexed, chunk_count } for ingest_document
+  // Each tab reads only its own response, and the operation guard keeps one
+  // operation's payload from ever being rendered as the other's.
+  const queryOp = queryExec.response?.data;
+  const answer =
+    queryOp?.operation === 'query' ? queryOp.data?.answer || '' : '';
+  const sources =
+    queryOp?.operation === 'query' && Array.isArray(queryOp.data?.sources)
+      ? queryOp.data.sources
+      : [];
+
+  const ingestOp = ingestExec.response?.data;
+  const ingestResult =
+    ingestOp?.operation === 'ingest_document' ? ingestOp.data : null;
 
   return (
     <div className="saas-workbench">
@@ -143,6 +270,13 @@ export default function KnowledgeAIPage() {
               <span>Ask a Question</span>
             </button>
             <button
+              className={`saas-tab-btn ${activeTab === 'ingest' ? 'active' : ''}`}
+              onClick={() => setActiveTab('ingest')}
+            >
+              <Upload size={15} />
+              <span>Ingest Document</span>
+            </button>
+            <button
               className={`saas-tab-btn ${activeTab === 'corpus' ? 'active' : ''}`}
               onClick={() => setActiveTab('corpus')}
             >
@@ -171,48 +305,83 @@ export default function KnowledgeAIPage() {
                     </div>
 
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      <button
-                        onClick={() => setActiveOp('query')}
+                      <span
                         style={{
                           fontSize: '0.72rem',
                           padding: '3px 10px',
                           borderRadius: '4px',
-                          background: activeOp === 'query' ? '#E8FF72' : 'rgba(255,255,255,0.05)',
-                          color: activeOp === 'query' ? '#000' : 'rgba(255,255,255,0.6)',
+                          background: '#E8FF72',
+                          color: '#000',
                           border: '1px solid rgba(255,255,255,0.1)',
-                          cursor: 'pointer',
                         }}
                       >
                         Ask Question
-                      </button>
-                      <button
-                        onClick={() => setActiveOp('list_documents')}
-                        style={{
-                          fontSize: '0.72rem',
-                          padding: '3px 10px',
-                          borderRadius: '4px',
-                          background: activeOp === 'list_documents' ? '#E8FF72' : 'rgba(255,255,255,0.05)',
-                          color: activeOp === 'list_documents' ? '#000' : 'rgba(255,255,255,0.6)',
-                          border: '1px solid rgba(255,255,255,0.1)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        List Documents
-                      </button>
+                      </span>
                     </div>
                   </div>
 
                   <div className="saas-card-body">
                     <div className="saas-input-group">
+                      <label className="saas-label">Ingested Document</label>
+                      {ingestedDocs.length === 0 ? (
+                        <div
+                          style={{
+                            padding: '14px',
+                            borderRadius: '6px',
+                            background: 'rgba(255,255,255,0.03)',
+                            border: '1px dashed rgba(255,255,255,0.12)',
+                            fontSize: '0.78rem',
+                            color: 'rgba(255,255,255,0.65)',
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          No documents ingested yet. Go to the{' '}
+                          <strong>Ingest Document</strong> tab to index a document before
+                          asking questions.
+                        </div>
+                      ) : (
+                        <>
+                          <select
+                            className="saas-input"
+                            value={selectedDocPath}
+                            onChange={(e) => setSelectedDocPath(e.target.value)}
+                            disabled={queryExec.isLoading}
+                          >
+                            <option value="">Select an ingested document…</option>
+                            {ingestedDocs.map((doc) => (
+                              <option key={doc.filePath} value={doc.filePath}>
+                                {doc.filePath} — Ingested: {formatTimestamp(doc.timestamp)}
+                              </option>
+                            ))}
+                          </select>
+                          {selectedDocPath && (
+                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px' }}>
+                              {selectedDocPath} — Ingested:{' '}
+                              {formatTimestamp(
+                                ingestedDocs.find((doc) => doc.filePath === selectedDocPath)
+                                  ?.timestamp,
+                              )}
+                            </div>
+                          )}
+                          <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px' }}>
+                            The selection scopes your question in this workflow. The query runs
+                            against the Knowledge vector store, so the request payload stays{' '}
+                            <code>{'{ question }'}</code>.
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="saas-input-group">
                       <label className="saas-label">Type your question below</label>
                       <input
                         type="text"
                         className="saas-input"
-                        placeholder="e.g. What is our employee leave policy?"
+                        placeholder="e.g. What embedding model does the platform use?"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                        disabled={isLoading}
+                        disabled={queryExec.isLoading}
                       />
                     </div>
 
@@ -241,42 +410,53 @@ export default function KnowledgeAIPage() {
                       <button
                         className="saas-btn saas-btn-primary"
                         onClick={() => handleSearch()}
-                        disabled={!query.trim() || isLoading}
+                        disabled={!query.trim() || !selectedDocPath || queryExec.isLoading}
+                        title={
+                          !selectedDocPath && ingestedDocs.length > 0
+                            ? 'Select an ingested document first'
+                            : undefined
+                        }
                         style={{ flexShrink: 0, marginLeft: '12px' }}
                       >
                         <Search size={14} />
-                        <span>{isLoading ? 'Searching...' : 'Ask Assistant'}</span>
+                        <span>{queryExec.isLoading ? 'Searching...' : 'Ask Assistant'}</span>
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Execution Result Card */}
+                {/* Query Execution Result Card — bound to queryExec only */}
                 <AgentExecutionResult
-                  executionMeta={executionMeta}
-                  isLoading={isLoading}
-                  error={error}
-                  response={response}
+                  executionMeta={queryExec.executionMeta}
+                  isLoading={queryExec.isLoading}
+                  error={queryExec.error}
+                  response={queryExec.response}
                   agentColor="#E8FF72"
                   simulatedData={
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ fontSize: '0.85rem', color: '#f4f4f5', lineHeight: 1.6, padding: '14px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '16px' }}>
-                        Employees are entitled to 20 days of annual paid leave per calendar year, accrued at 1.67 days per month. Leave must be requested via the HR portal with a minimum of 3 business days notice. Sick leave is separate at 10 days annually.
-                      </div>
-                      <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono', textTransform: 'uppercase', marginBottom: '8px' }}>
-                        CITED CORPUS SOURCES:
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', fontSize: '0.75rem' }}>
-                          <span>Employee Handbook.pdf • Section 5.2 (Pages 24-27)</span>
-                          <span style={{ color: '#E8FF72', fontFamily: 'JetBrains Mono' }}>98% match</span>
+                    answer ? (
+                      <div style={{ marginTop: '12px' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#f4f4f5', lineHeight: 1.6, padding: '14px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '16px' }}>
+                          {answer}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', fontSize: '0.75rem' }}>
-                          <span>Leave Policy.pdf • Annual Entitlement (Pages 1-3)</span>
-                          <span style={{ color: '#E8FF72', fontFamily: 'JetBrains Mono' }}>94% match</span>
-                        </div>
+                        {sources.length > 0 && (
+                          <>
+                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono', textTransform: 'uppercase', marginBottom: '8px' }}>
+                              CITED CORPUS SOURCES:
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {sources.map((src, i) => (
+                                <div key={`${src.source}-${src.page}-${i}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '8px 12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', fontSize: '0.75rem' }}>
+                                  <span style={{ wordBreak: 'break-all' }}>{src.source}</span>
+                                  <span style={{ color: '#E8FF72', fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                                    p. {src.page}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </div>
+                    ) : null
                   }
                 />
               </div>
@@ -319,7 +499,7 @@ export default function KnowledgeAIPage() {
                   </div>
                   <div className="saas-card-body">
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                      {['query', 'ingest_document', 'list_documents', 'delete_document'].map((cap) => (
+                      {knowledgeCapabilities.map((cap) => (
                         <span
                           key={cap}
                           style={{
@@ -336,13 +516,114 @@ export default function KnowledgeAIPage() {
                         </span>
                       ))}
                     </div>
+                    <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '8px' }}>
+                      Read live from <code>GET /api/v1/agents</code>.
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 2: Document Corpus */}
+          {/* TAB 2: Ingest Document */}
+          {activeTab === 'ingest' && (
+            <div className="saas-workbench-grid">
+              <div>
+                <div className="saas-card" style={{ marginBottom: '20px' }}>
+                  <div className="saas-card-header">
+                    <div className="saas-card-title">
+                      <Upload size={16} color="#E8FF72" />
+                      <span>Ingest a Document</span>
+                    </div>
+                  </div>
+
+                  <div className="saas-card-body">
+                    <div className="saas-input-group">
+                      <label className="saas-label">File Path (server-side)</label>
+                      <input
+                        type="text"
+                        className="saas-input"
+                        placeholder="knowledge_agent/data/documents/example.docx"
+                        value={ingestPath}
+                        onChange={(e) => setIngestPath(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleIngest()}
+                        disabled={ingestExec.isLoading}
+                      />
+                      <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px', lineHeight: 1.5 }}>
+                        Relative paths resolve from the <code>backend/</code> directory. Supported
+                        formats: <code>.pdf</code>, <code>.docx</code>, <code>.txt</code>. The server
+                        reads the file directly, so it must already exist on disk. Browser file
+                        upload is not available.
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}>
+                        {ingestedDocs.length} document
+                        {ingestedDocs.length === 1 ? '' : 's'} ingested from this browser
+                      </span>
+                      <button
+                        className="saas-btn"
+                        onClick={handleIngest}
+                        disabled={!ingestPath.trim() || ingestExec.isLoading}
+                        style={{ background: '#E8FF72', color: '#000', fontWeight: 600 }}
+                      >
+                        <Upload size={14} />
+                        <span>{ingestExec.isLoading ? 'Ingesting...' : 'Ingest Document'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Ingest Execution Result Card — bound to ingestExec only */}
+                <AgentExecutionResult
+                  executionMeta={ingestExec.executionMeta}
+                  isLoading={ingestExec.isLoading}
+                  error={ingestExec.error}
+                  response={ingestExec.response}
+                  agentColor="#E8FF72"
+                  simulatedData={
+                    ingestResult ? (
+                      <div style={{ marginTop: '12px' }}>
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            padding: '10px 14px',
+                            borderRadius: '6px',
+                            background: ingestResult.indexed
+                              ? 'rgba(232,255,114,0.08)'
+                              : 'rgba(245,158,11,0.08)',
+                            border: `1px solid ${
+                              ingestResult.indexed
+                                ? 'rgba(232,255,114,0.25)'
+                                : 'rgba(245,158,11,0.25)'
+                            }`,
+                            fontSize: '0.82rem',
+                            color: '#f4f4f5',
+                          }}
+                        >
+                          {ingestResult.indexed
+                            ? `Indexed ${ingestResult.chunk_count} chunk${
+                                ingestResult.chunk_count === 1 ? '' : 's'
+                              }`
+                            : 'No chunks were produced for this file.'}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '10px', lineHeight: 1.5 }}>
+                          {ingestResult.indexed
+                            ? 'Switch to Ask a Question to query the knowledge store.'
+                            : 'The file parsed but produced no content. Check that it is a readable PDF, DOCX, or TXT.'}
+                        </div>
+                      </div>
+                    ) : null
+                  }
+                />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: Document Corpus */}
           {activeTab === 'corpus' && (
             <div className="saas-card">
               <div className="saas-card-header">
@@ -353,12 +634,17 @@ export default function KnowledgeAIPage() {
 
                 <button
                   className="saas-btn saas-btn-primary"
-                  onClick={() => handleSearch('list_documents')}
+                  onClick={() => setActiveTab('ingest')}
                   style={{ padding: '6px 12px', fontSize: '0.75rem' }}
                 >
                   <Upload size={14} />
                   <span>Ingest New Document</span>
                 </button>
+              </div>
+
+              <div style={{ padding: '12px 20px 0', fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>
+                Illustrative inventory. The backend exposes no operation that lists indexed
+                documents, so these rows are placeholders rather than live query results.
               </div>
 
               <table className="saas-table">
@@ -405,7 +691,7 @@ export default function KnowledgeAIPage() {
             </div>
           )}
 
-          {/* TAB 3: What This Assistant Does (User Guide) */}
+          {/* TAB 4: What This Assistant Does (User Guide) */}
           {activeTab === 'seam' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               {/* Overview Card */}

@@ -2,6 +2,23 @@ import os
 from pathlib import Path
 
 import pandas as pd
+
+import matplotlib
+
+# Select a non-GUI backend before pyplot is imported. The backend is resolved at
+# pyplot import time, so this call must come first.
+#
+# Without it, matplotlib auto-selects TkAgg wherever Tkinter is available,
+# which is most Windows and macOS installs. Charts are rendered on a worker
+# thread (see app/services/job_manager.py), so a GUI backend initialises Tk off
+# the main thread and registers Tcl's async-delete handler against the wrong
+# thread. That emits a UserWarning per chart, followed by RuntimeError and
+# Tcl_AsyncDelete noise when the long-lived worker thread is torn down.
+#
+# Agg is matplotlib's headless rasteriser, ships with matplotlib itself, and is
+# the correct backend for writing PNG files to disk.
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 
 

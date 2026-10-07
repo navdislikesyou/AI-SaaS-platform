@@ -15,6 +15,7 @@ const AGENT_METADATA = {
     category: 'RAG & Document Intelligence',
     defaultOperation: 'query',
     samplePayload: { question: 'What is our employee leave policy?' },
+    executionPath: 'execute',
   },
   automation: {
     num: '02',
@@ -28,7 +29,9 @@ const AGENT_METADATA = {
     tagline: 'Turn productivity requests into draft actions.',
     category: 'Workflow & Task Automation',
     defaultOperation: 'draft_action',
-    samplePayload: { prompt: 'Schedule a quarterly sync with leadership' },
+    // The adapter requires `instruction`, not `prompt`.
+    samplePayload: { instruction: 'Schedule a quarterly sync with leadership' },
+    executionPath: 'execute',
   },
   performance: {
     num: '03',
@@ -41,8 +44,10 @@ const AGENT_METADATA = {
     bg: '#0d0400',
     tagline: 'Data analytics, KPIs, trends, and operational insights.',
     category: 'Analytics & Insights Engine',
-    defaultOperation: 'compute_kpis',
-    samplePayload: { dataset: 'q3_sales', metric: 'revenue' },
+    // Performance is NOT executable through /agents/execute. Its operations run
+    // as background jobs, so it advertises no capabilities in the catalog and
+    // carries no defaultOperation or samplePayload.
+    executionPath: 'jobs',
   },
 };
 
@@ -108,7 +113,16 @@ export const agentService = {
           category: 'AI Worker',
           defaultOperation: bAgent.capabilities?.[0] || 'execute',
           samplePayload: {},
+          executionPath: 'execute',
         };
+
+        // An agent advertising no capabilities is not broken: it is served by a
+        // different endpoint. The backend reports `capabilities: []` for
+        // Performance because its work runs as a background job. Normalize that
+        // here so components read `executionPath` instead of branching on name.
+        const capabilities = bAgent.capabilities || [];
+        const executionPath =
+          meta.executionPath || (capabilities.length === 0 ? 'jobs' : 'execute');
 
         return {
           id: bAgent.name,
@@ -122,10 +136,11 @@ export const agentService = {
           bg: meta.bg,
           tagline: meta.tagline,
           description: bAgent.description,
-          capabilities: bAgent.capabilities || [],
+          capabilities,
           status: bAgent.status, // 'ready' or 'not_connected'
           available: bAgent.available,
           isBackend: true,
+          executionPath,
           defaultOperation: meta.defaultOperation,
           samplePayload: meta.samplePayload,
         };
@@ -139,7 +154,7 @@ export const agentService = {
         id: key,
         ...meta,
         description: 'Autonomous enterprise workforce agent.',
-        capabilities: ['query', 'execute'],
+        capabilities: meta.executionPath === 'jobs' ? [] : ['query', 'execute'],
         status: 'not_connected',
         available: false,
         isBackend: true,

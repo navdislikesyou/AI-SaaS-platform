@@ -13,60 +13,40 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import Navigation from '../components/Navigation';
-import { useAgentExecution } from '../hooks/useAgentExecution';
+import { usePerformanceJob } from '../hooks/usePerformanceJob';
+import { PERFORMANCE_OPERATIONS } from '../services/performanceService';
 import AgentExecutionResult from '../components/AgentExecutionResult';
 
-const SAMPLE_PAYLOADS = [
-  { label: 'Compute Q3 Sales KPIs', op: 'compute_kpis', payload: { dataset: 'q3_sales', metric: 'revenue' } },
-  { label: 'Compare Periods (Aug vs Sep)', op: 'compare_periods', payload: { period_a: '2026-08', period_b: '2026-09' } },
-  { label: 'Analyze Latency Distribution', op: 'analyze', payload: { dataset: 'agent_telemetry', dimension: 'duration_ms' } },
-  { label: 'Generate Visual Schema', op: 'visualize', payload: { chart_type: 'timeseries', metric: 'throughput' } },
+// Exactly the operations the backend job API accepts. No others are implemented.
+const OPERATION_OPTIONS = [
+  { id: 'load_dataset', label: 'Describe Dataset' },
+  { id: 'compute_kpis', label: 'Calculate KPIs' },
+  { id: 'compare_periods', label: 'Compare Periods' },
+  { id: 'analyze', label: 'Analyze Trends' },
+  { id: 'visualize', label: 'Charts' },
 ];
 
-const DATASETS = [
-  {
-    id: 'ds_01',
-    name: 'q3_sales_metrics.csv',
-    rows: '14,250',
-    columns: '18',
-    size: '2.4 MB',
-    type: 'Financial',
-  },
-  {
-    id: 'ds_02',
-    name: 'agent_dispatch_telemetry.parquet',
-    rows: '89,400',
-    columns: '12',
-    size: '8.1 MB',
-    type: 'Operational',
-  },
-  {
-    id: 'ds_03',
-    name: 'workforce_utilization.csv',
-    rows: '3,800',
-    columns: '9',
-    size: '640 KB',
-    type: 'Resource',
-  },
-];
+const STATUS_LABELS = {
+  queued: 'Queued',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+};
 
 export default function PerformanceAIPage() {
   const [activeTab, setActiveTab] = useState('playground');
   const [activeOp, setActiveOp] = useState('compute_kpis');
-  const [dataset, setDataset] = useState('q3_sales_metrics');
+  // Left empty on purpose. The backend reads a server-side file path, so the
+  // operator must state it explicitly rather than accept a silent default.
+  const [filePath, setFilePath] = useState('');
 
-  const { execute, isLoading, response, error, executionMeta } = useAgentExecution();
+  const { submit, job, jobId, status, result, error, isLoading } = usePerformanceJob();
 
-  const handleExecute = async (op = activeOp, customPayload = null) => {
+  const handleExecute = async (op = activeOp) => {
     if (isLoading) return;
-    const payload = customPayload || {
-      dataset,
-      metric: 'revenue',
-      operation: op,
-    };
+    if (!filePath.trim()) return;
 
-    // Call real FastAPI backend execution endpoint
-    await execute('performance', op, payload);
+    await submit(op, filePath.trim());
   };
 
   return (
@@ -127,7 +107,7 @@ export default function PerformanceAIPage() {
               onClick={() => setActiveTab('datasets')}
             >
               <Table size={15} />
-              <span>Connected Data ({DATASETS.length})</span>
+              <span>Dataset Source</span>
             </button>
             <button
               className={`saas-tab-btn ${activeTab === 'seam' ? 'active' : ''}`}
@@ -150,12 +130,7 @@ export default function PerformanceAIPage() {
                     </div>
 
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      {[
-                        { id: 'compute_kpis', label: 'Calculate KPIs' },
-                        { id: 'compare_periods', label: 'Compare Periods' },
-                        { id: 'analyze', label: 'Analyze Trends' },
-                        { id: 'visualize', label: 'Charts' },
-                      ].map((op) => (
+                      {OPERATION_OPTIONS.map((op) => (
                         <button
                           key={op.id}
                           onClick={() => setActiveOp(op.id)}
@@ -177,82 +152,127 @@ export default function PerformanceAIPage() {
 
                   <div className="saas-card-body">
                     <div className="saas-input-group">
-                      <label className="saas-label">Target Dataset / Business Report</label>
+                      <label className="saas-label">Dataset File Path (server-side)</label>
                       <input
                         type="text"
                         className="saas-input"
-                        placeholder="e.g. q3_sales_metrics, team_velocity, or enterprise_churn..."
-                        value={dataset}
-                        onChange={(e) => setDataset(e.target.value)}
+                        placeholder="performance_agent/data/Financials_standardized.csv"
+                        value={filePath}
+                        onChange={(e) => setFilePath(e.target.value)}
                         disabled={isLoading}
                       />
+                      <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px', lineHeight: 1.5 }}>
+                        Relative paths resolve from the <code>backend/</code> directory. Supported
+                        formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>. The server
+                        reads the file directly, so it must already exist on disk.
+                      </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px' }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {SAMPLE_PAYLOADS.map((sp, i) => (
-                          <button
-                            key={i}
-                            type="button"
-                            onClick={() => {
-                              setActiveOp(sp.op);
-                              handleExecute(sp.op, sp.payload);
-                            }}
+                    {jobId && (
+                      <div
+                        style={{
+                          marginTop: '12px',
+                          padding: '10px 12px',
+                          borderRadius: '6px',
+                          background: 'rgba(255,255,255,0.03)',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          fontSize: '0.75rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                          <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono' }}>
+                            JOB ID
+                          </span>
+                          <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5', wordBreak: 'break-all', textAlign: 'right' }}>
+                            {jobId}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
+                          <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono' }}>
+                            STATUS
+                          </span>
+                          <span
                             style={{
-                              background: 'rgba(255,255,255,0.04)',
-                              border: '1px solid rgba(255,255,255,0.08)',
-                              borderRadius: '4px',
-                              padding: '4px 8px',
-                              fontSize: '0.72rem',
-                              color: 'rgba(255,255,255,0.7)',
-                              cursor: 'pointer',
+                              fontFamily: 'JetBrains Mono',
+                              color: status === 'failed' ? '#F87171' : status === 'completed' ? '#10B981' : '#FF5A00',
                             }}
                           >
-                            {sp.label}
-                          </button>
-                        ))}
+                            {STATUS_LABELS[status] || status}
+                          </span>
+                        </div>
                       </div>
+                    )}
 
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: '12px' }}>
                       <button
                         className="saas-btn"
                         onClick={() => handleExecute(activeOp)}
-                        disabled={!dataset.trim() || isLoading}
-                        style={{ background: '#FF5A00', color: '#fff', fontWeight: 600, flexShrink: 0, marginLeft: '12px' }}
+                        disabled={!filePath.trim() || isLoading}
+                        style={{ background: '#FF5A00', color: '#fff', fontWeight: 600, flexShrink: 0 }}
                       >
                         <Play size={14} fill="#fff" />
-                        <span>{isLoading ? 'Calculating...' : 'Generate Report'}</span>
+                        <span>{isLoading ? 'Running Job...' : 'Run Analysis'}</span>
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Live Backend Execution Result Card */}
+                {/* Live Backend Job Result Card */}
                 <AgentExecutionResult
-                  executionMeta={executionMeta}
+                  executionMeta={
+                    job
+                      ? {
+                          agent: 'performance',
+                          operation: job.operation,
+                          requestId: job.job_id,
+                          status: status === 'failed' ? 'error' : 'success',
+                          durationMs: job.started_at && job.completed_at ? undefined : undefined,
+                        }
+                      : null
+                  }
                   isLoading={isLoading}
                   error={error}
-                  response={response}
+                  response={job ? { data: job } : null}
                   agentColor="#FF5A00"
                   simulatedData={
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono', marginBottom: '8px' }}>
-                        STATISTICAL SUMMARY:
+                    result?.visualizations?.length ? (
+                      <div style={{ marginTop: '12px' }}>
+                        <div
+                          style={{
+                            fontSize: '0.72rem',
+                            color: 'rgba(255,255,255,0.5)',
+                            fontFamily: 'JetBrains Mono',
+                            marginBottom: '8px',
+                          }}
+                        >
+                          GENERATED CHARTS ({result.generated})
+                        </div>
+                        <table className="saas-table">
+                          <thead>
+                            <tr>
+                              <th>Chart</th>
+                              <th>File</th>
+                              <th>Size</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.visualizations.map((viz) => (
+                              <tr key={viz.name}>
+                                <td style={{ fontFamily: 'JetBrains Mono', color: '#FF5A00' }}>{viz.name}</td>
+                                <td style={{ fontFamily: 'JetBrains Mono' }}>{viz.filename}</td>
+                                <td style={{ fontFamily: 'JetBrains Mono' }}>
+                                  {(viz.size_bytes / 1024).toFixed(1)} KB
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '10px', lineHeight: 1.5 }}>
+                          Charts are written on the server. There is no endpoint serving the image
+                          files yet, so only metadata is shown here.
+                        </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginTop: '10px' }}>
-                        <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
-                          <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono' }}>MEAN DURATION</div>
-                          <div style={{ fontSize: '1.25rem', fontFamily: 'Syne', fontWeight: 700, color: '#f4f4f5', marginTop: '4px' }}>14.2ms</div>
-                        </div>
-                        <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
-                          <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono' }}>DISPATCH COUNT</div>
-                          <div style={{ fontSize: '1.25rem', fontFamily: 'Syne', fontWeight: 700, color: '#f4f4f5', marginTop: '4px' }}>12,408</div>
-                        </div>
-                        <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
-                          <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'JetBrains Mono' }}>PERCENTILE P99</div>
-                          <div style={{ fontSize: '1.25rem', fontFamily: 'Syne', fontWeight: 700, color: '#f4f4f5', marginTop: '4px' }}>28.1ms</div>
-                        </div>
-                      </div>
-                    </div>
+                    ) : null
                   }
                 />
               </div>
@@ -272,8 +292,12 @@ export default function PerformanceAIPage() {
                       <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>PerformanceAgentAdapter</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
+                      <span style={{ color: 'rgba(255,255,255,0.45)' }}>Execution Path:</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>Background Job</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Timeout Limit:</span>
-                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>120.0 seconds</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>None enforced</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Domain Rule:</span>
@@ -281,7 +305,7 @@ export default function PerformanceAIPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Execution Seam:</span>
-                      <span style={{ fontFamily: 'JetBrains Mono', color: '#FF5A00' }}>run(operation, payload)</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: '#FF5A00' }}>POST /api/v1/performance/jobs</span>
                     </div>
                   </div>
                 </div>
@@ -289,52 +313,51 @@ export default function PerformanceAIPage() {
             </div>
           )}
 
-          {/* TAB 2: Datasets */}
+          {/* TAB 2: Dataset Source */}
           {activeTab === 'datasets' && (
             <div className="saas-card">
               <div className="saas-card-header">
                 <div className="saas-card-title">
                   <Table size={16} color="#FF5A00" />
-                  <span>Configured Analytics Datasets</span>
+                  <span>Dataset Source</span>
                 </div>
               </div>
 
-              <table className="saas-table">
-                <thead>
-                  <tr>
-                    <th>Dataset Identifier</th>
-                    <th>Record Count</th>
-                    <th>Dimensions</th>
-                    <th>Storage Size</th>
-                    <th>Domain Type</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {DATASETS.map((ds) => (
-                    <tr key={ds.id}>
-                      <td style={{ fontWeight: 500, color: '#fafafa' }}>{ds.name}</td>
-                      <td style={{ fontFamily: 'JetBrains Mono' }}>{ds.rows} rows</td>
-                      <td style={{ fontFamily: 'JetBrains Mono' }}>{ds.columns} cols</td>
-                      <td style={{ fontFamily: 'JetBrains Mono' }}>{ds.size}</td>
-                      <td>
-                        <span
-                          style={{
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: '0.65rem',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            background: 'rgba(255,90,0,0.1)',
-                            color: '#FF5A00',
-                            border: '1px solid rgba(255,90,0,0.25)',
-                          }}
-                        >
-                          {ds.type}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="saas-card-body" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.75)', lineHeight: 1.7 }}>
+                <p style={{ marginBottom: '14px' }}>
+                  The Performance Analyzer reads datasets from the server filesystem. There is no
+                  upload endpoint, so a dataset must already exist on disk before a job can read it.
+                </p>
+
+                <div className="saas-input-group" style={{ marginBottom: '16px' }}>
+                  <label className="saas-label">File Path (server-side)</label>
+                  <input
+                    type="text"
+                    className="saas-input"
+                    placeholder="performance_agent/data/Financials_standardized.csv"
+                    value={filePath}
+                    onChange={(e) => setFilePath(e.target.value)}
+                    disabled={isLoading}
+                  />
+                </div>
+
+                <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.6)' }}>
+                  <div style={{ marginBottom: '8px' }}>Example paths shipped with the repository:</div>
+                  <ul style={{ margin: 0, paddingLeft: '18px', fontFamily: 'JetBrains Mono', fontSize: '0.75rem' }}>
+                    <li>performance_agent/data/Financials_standardized.csv</li>
+                    <li>performance_agent/data/Financials.csv</li>
+                  </ul>
+                </div>
+
+                <div style={{ marginTop: '16px', fontSize: '0.78rem', color: 'rgba(255,255,255,0.6)' }}>
+                  <div style={{ marginBottom: '8px' }}>Supported operations:</div>
+                  <ul style={{ margin: 0, paddingLeft: '18px', fontFamily: 'JetBrains Mono', fontSize: '0.75rem' }}>
+                    {PERFORMANCE_OPERATIONS.map((op) => (
+                      <li key={op}>{op}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
             </div>
           )}
 
@@ -424,19 +447,19 @@ export default function PerformanceAIPage() {
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(255,90,0,0.15)', color: '#FF5A00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         1
                       </span>
-                      <span>Go to the <strong>Metrics & Trends</strong> tab and choose what kind of analysis you need (e.g. <em>Calculate KPIs</em> or <em>Compare Periods</em>).</span>
+                      <span>Go to the <strong>Metrics &amp; Trends</strong> tab and choose what kind of analysis you need (e.g. <em>Calculate KPIs</em> or <em>Compare Periods</em>).</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(255,90,0,0.15)', color: '#FF5A00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         2
                       </span>
-                      <span>Select a sample report from the quick buttons (e.g. <em>Compute Q3 Sales KPIs</em>) or type a dataset identifier.</span>
+                      <span>Enter the server-side path of an existing dataset, for example <em>performance_agent/data/Financials_standardized.csv</em>.</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(255,90,0,0.15)', color: '#FF5A00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         3
                       </span>
-                      <span>Click <strong>Generate Report</strong> to view immediate mathematical figures, metric trends, and summary findings.</span>
+                      <span>Click <strong>Run Analysis</strong>. Analysis runs as a background job, so the panel shows the job status while it works and the result once it completes.</span>
                     </div>
                   </div>
                 </div>
