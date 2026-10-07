@@ -14,6 +14,7 @@ import abc
 import asyncio
 import logging
 import threading
+import time
 import weakref
 from typing import Any
 
@@ -40,6 +41,37 @@ DEFAULT_MAX_AGENT_CONCURRENCY = 4
 _limiters_by_loop: weakref.WeakKeyDictionary[Any, anyio.CapacityLimiter] = (
     weakref.WeakKeyDictionary()
 )
+
+
+def _record_activity(
+    agent: str,
+    operation: str,
+    status: str,
+    started: float,
+) -> None:
+    """Record one agent operation in the Activity History.
+
+    Imported lazily so a failure in history storage can never break agent
+    execution, and to keep the storage module out of the adapter import path.
+
+    Args:
+        agent: Agent name.
+        operation: Operation name.
+        status: ``completed`` or ``failed``.
+        started: A :func:`time.perf_counter` reading taken before the call.
+    """
+    try:
+        from app.services.activity_store import record_operation
+
+        record_operation(
+            agent=agent,
+            operation=operation,
+            status=status,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    except Exception:
+        logger.warning("activity_record_failed agent=%s", agent, exc_info=True)
 
 
 class AgentAdapter(abc.ABC):
@@ -175,6 +207,7 @@ class AgentAdapter(abc.ABC):
         """
         limiter = _limiter_for(self.max_concurrency)
         slot = _Slot(limiter, self.name, operation)
+        started = time.perf_counter()
 
         await slot.acquire()
         try:
@@ -192,12 +225,20 @@ class AgentAdapter(abc.ABC):
                     payload,
                     abandon_on_cancel=True,
                 )
+        except BaseException:
+            # Exactly one history record per terminal outcome. Recording in the
+            # failure branch means a failed or timed-out call is captured too,
+            # and re-raising here cannot produce a second record.
+            _record_activity(self.name, operation, "failed", started)
+            raise
         finally:
             # Only reclaim the slot if the call never reached a worker thread.
             # A thread that outlived its timeout releases the slot itself, and
             # releasing here as well would hand the slot back while the thread
             # is still burning CPU, which is exactly the leak being prevented.
             slot.abandon_if_never_entered()
+
+        _record_activity(self.name, operation, "completed", started)
 
         if raw is None:
             return {}

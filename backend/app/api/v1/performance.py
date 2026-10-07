@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_job_manager
 from app.core.exceptions import (
@@ -155,4 +156,59 @@ async def get_performance_job(
         data=PerformanceJobStatusResponse(**job.to_status_response()),
         message=f"Performance job '{job.status.value}'.",
         request_id=get_request_id(),
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/artifacts/{filename}",
+    response_class=FileResponse,
+    summary="Download a generated chart for a performance job",
+    description=(
+        "Streams one PNG a `visualize` job generated. The filename must match "
+        "an artifact the job itself reported, and access is restricted to that "
+        "job's visualization directory. Returns 404 for an unknown job, an "
+        "unknown artifact, or a filename the job did not generate."
+    ),
+    responses={
+        200: {"content": {"image/png": {}}, "description": "The generated chart"},
+        404: {"description": "Unknown job, or unknown artifact for that job"},
+    },
+)
+async def get_performance_artifact(
+    job_id: str,
+    filename: str,
+    job_manager: JobManager = Depends(get_job_manager),
+) -> FileResponse:
+    """Stream one generated visualization PNG for a completed job.
+
+    Resolution is delegated to
+    :meth:`~app.services.job_manager.JobManager.resolve_artifact`, which
+    allowlists the filename against the job's own artifact metadata and
+    confines the resolved path to that job's visualization directory.
+
+    Args:
+        job_id: The job that generated the chart.
+        filename: The bare artifact filename from the job's ``visualizations``.
+        job_manager: The job manager holding the job and its artifacts.
+
+    Returns:
+        The PNG bytes with an ``image/png`` media type.
+
+    Raises:
+        JobNotFoundError: If no job has that id, or the job did not generate
+            that artifact (404).
+    """
+    path = job_manager.resolve_artifact(job_id, filename)
+
+    if path is None:
+        raise JobNotFoundError(
+            f"Artifact '{filename}' was not found for job '{job_id}'.",
+            details={"job_id": job_id, "filename": filename},
+        )
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        # No Content-Disposition filename, so the absolute path is never exposed.
+        filename=None,
     )

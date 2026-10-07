@@ -12,6 +12,8 @@
  */
 import { apiClient } from './api';
 
+const BASE_URL = import.meta.env.VITE_API_URL || '/api/v1';
+
 export const PERFORMANCE_OPERATIONS = [
   'load_dataset',
   'compute_kpis',
@@ -24,6 +26,23 @@ export const PERFORMANCE_OPERATIONS = [
 export const TERMINAL_JOB_STATUSES = ['completed', 'failed'];
 
 export const performanceService = {
+  /**
+   * URL for one generated chart.
+   *
+   * Returns a plain URL rather than fetching, so the browser loads the image
+   * only when an <img> is actually mounted. Nothing here builds a filesystem
+   * path: the backend scopes the artifact to the job that generated it.
+   *
+   * @param {string} jobId
+   * @param {string} filename Bare filename from the job's artifacts.
+   * @returns {string}
+   */
+  artifactUrl(jobId, filename) {
+    return `${BASE_URL}/performance/jobs/${encodeURIComponent(
+      jobId,
+    )}/artifacts/${encodeURIComponent(filename)}`;
+  },
+
   /**
    * Submit a job for background execution.
    *

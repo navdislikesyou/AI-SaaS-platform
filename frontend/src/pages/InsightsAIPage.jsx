@@ -1,7 +1,67 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
+import { CheckCircle2, AlertCircle } from 'lucide-react';
 import Navigation from '../components/Navigation';
+import { useActivity } from '../hooks/useActivity';
+
+const AGENT_COLORS = {
+  knowledge: '#E8FF72',
+  automation: '#4a9dc4',
+  performance: '#FF5A00',
+};
+
+const AGENT_LABELS = {
+  knowledge: 'Knowledge',
+  automation: 'Automation',
+  performance: 'Performance',
+};
+
+function formatTime(iso) {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function formatDay(iso) {
+  try {
+    const date = new Date(iso);
+    const today = new Date();
+
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+    const days = Math.round((startOfDay(today) - startOfDay(date)) / 86400000);
+
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
+function groupByDay(records) {
+  const groups = [];
+
+  records.forEach((record) => {
+    const label = formatDay(record.timestamp);
+    const last = groups[groups.length - 1];
+
+    if (last && last.label === label) {
+      last.items.push(record);
+    } else {
+      groups.push({ label, items: [record] });
+    }
+  });
+
+  return groups;
+}
 
 function CountUp({ target, suffix = '', duration = 2000 }) {
   const [value, setValue] = useState(0);
@@ -37,10 +97,21 @@ const ACTIVITY_WEEKS = [
 export default function InsightsAIPage() {
   const navigate = useNavigate();
 
+  const { activities, isLoading: activityLoading } = useActivity();
+  const groupedActivity = groupByDay(activities);
+
   return (
-    <div className="agent-page">
+    <div className="saas-workbench">
       <Navigation />
-      <main className="agent-main">
+      <main className="saas-main-container">
+
+        <div className="saas-topbar">
+          <div className="saas-breadcrumb">
+            <span className="saas-breadcrumb-item">Organization</span>
+            <span className="saas-breadcrumb-sep">/</span>
+            <span className="saas-breadcrumb-active">Activity History</span>
+          </div>
+        </div>
 
         <div className="agent-hero insights-hero">
           <div className="agent-hero-inner">
@@ -187,30 +258,69 @@ export default function InsightsAIPage() {
               <span className="workspace-panel-label">Recent Activity</span>
             </div>
             <div className="activity-log">
-              {[
-                { time: '2 min ago', agent: 'Knowledge AI', action: 'Answered: "Remote work policy details"', user: 'Jordan P.', color: '#E8FF72' },
-                { time: '14 min ago', agent: 'Hiring AI', action: 'Analyzed 3 resumes for React Developer role', user: 'Sarah C.', color: '#FF5A00' },
-                { time: '28 min ago', agent: 'Communication AI', action: 'Generated MoM for HR Review meeting', user: 'Marcus W.', color: '#4a9dc4' },
-                { time: '1h ago', agent: 'Research AI', action: 'Summarized: BERT paper · 97% relevance', user: 'Marcus W.', color: '#f5f4f0' },
-                { time: '2h ago', agent: 'Insights AI', action: 'Generated weekly performance report', user: 'Sarah C.', color: '#FFFBE8' },
-              ].map((item, i) => (
-                <motion.div
-                  key={i}
-                  className="activity-log-item"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.7 + i * 0.05 }}
-                >
-                  <div className="activity-log-dot" style={{ background: item.color }} />
+              {activityLoading && (
+                <div className="activity-log-item">
+                  <div className="activity-log-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
                   <div className="activity-log-info">
-                    <div className="activity-log-agent" style={{ color: item.color }}>{item.agent}</div>
-                    <div className="activity-log-action">{item.action}</div>
+                    <div className="activity-log-action">Loading activity…</div>
                   </div>
-                  <div className="activity-log-right">
-                    <span className="activity-log-user">{item.user}</span>
-                    <span className="activity-log-time">{item.time}</span>
+                </div>
+              )}
+
+              {!activityLoading && groupedActivity.length === 0 && (
+                <div className="activity-log-item">
+                  <div className="activity-log-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
+                  <div className="activity-log-info">
+                    <div className="activity-log-action">No activity yet.</div>
                   </div>
-                </motion.div>
+                </div>
+              )}
+
+              {groupedActivity.map((group) => (
+                <div key={group.label}>
+                  <div className="activity-log-user" style={{ padding: '10px 0 4px' }}>
+                    {group.label}
+                  </div>
+
+                  {group.items.map((item, i) => {
+                    const color = AGENT_COLORS[item.agent] || '#f5f4f0';
+                    const failed = item.status === 'failed';
+
+                    return (
+                      <motion.div
+                        key={item.id}
+                        className="activity-log-item"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.7 + i * 0.05 }}
+                      >
+                        <div className="activity-log-dot" style={{ background: color }} />
+                        <div className="activity-log-info">
+                          <div className="activity-log-agent" style={{ color }}>
+                            {AGENT_LABELS[item.agent] || item.agent}
+                          </div>
+                          <div className="activity-log-action">{item.description}</div>
+                          <div className="activity-log-user" style={{ marginTop: '2px' }}>
+                            {failed ? (
+                              <span style={{ color: '#F87171', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                <AlertCircle size={11} />
+                                Failed
+                              </span>
+                            ) : (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                <CheckCircle2 size={11} />
+                                Completed
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="activity-log-right">
+                          <span className="activity-log-time">{formatTime(item.timestamp)}</span>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
               ))}
             </div>
           </motion.div>

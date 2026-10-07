@@ -13,6 +13,7 @@ import ResearchAIPage from './pages/ResearchAIPage';
 import KnowledgeAIPage from './pages/KnowledgeAIPage';
 import AutomationAIPage from './pages/AutomationAIPage';
 import PerformanceAIPage from './pages/PerformanceAIPage';
+import InsightsAIPage from './pages/InsightsAIPage';
 import OrganizationPage from './pages/OrganizationPage';
 import SettingsPage from './pages/SettingsPage';
 
@@ -106,7 +107,7 @@ function AppRoutes() {
           path="/insights"
           element={
             <ProtectedRoute>
-              <PerformanceAIPage />
+              <InsightsAIPage />
             </ProtectedRoute>
           }
         />
@@ -114,7 +115,7 @@ function AppRoutes() {
           path="/agents/insights"
           element={
             <ProtectedRoute>
-              <PerformanceAIPage />
+              <InsightsAIPage />
             </ProtectedRoute>
           }
         />

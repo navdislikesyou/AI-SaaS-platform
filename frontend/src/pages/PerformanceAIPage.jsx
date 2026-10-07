@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import { usePerformanceJob } from '../hooks/usePerformanceJob';
-import { PERFORMANCE_OPERATIONS } from '../services/performanceService';
+import { PERFORMANCE_OPERATIONS, performanceService } from '../services/performanceService';
 import AgentExecutionResult from '../components/AgentExecutionResult';
 
 // Exactly the operations the backend job API accepts. No others are implemented.
@@ -39,14 +39,33 @@ export default function PerformanceAIPage() {
   // Left empty on purpose. The backend reads a server-side file path, so the
   // operator must state it explicitly rather than accept a silent default.
   const [filePath, setFilePath] = useState('');
+  // Which chart row is open, or null. A single value guarantees only one chart
+  // image is mounted at a time, so at most one PNG is fetched at a time.
+  const [expandedArtifact, setExpandedArtifact] = useState(null);
+  const [imageErrors, setImageErrors] = useState({});
 
-  const { submit, job, jobId, status, result, error, isLoading } = usePerformanceJob();
+  const { submit, getExecution } = usePerformanceJob();
+
+  // Read only the selected operation's execution. Each operation owns its own
+  // job id, status, result, and error, so switching tabs can never surface
+  // another operation's output.
+  const { job, jobId, status, result, error, isLoading } = getExecution(activeOp);
 
   const handleExecute = async (op = activeOp) => {
-    if (isLoading) return;
     if (!filePath.trim()) return;
+    if (getExecution(op).isLoading) return;
+
+    // A new Charts job invalidates the open chart for Charts only.
+    if (op === 'visualize') {
+      setExpandedArtifact(null);
+      setImageErrors({});
+    }
 
     await submit(op, filePath.trim());
+  };
+
+  const toggleArtifact = (filename) => {
+    setExpandedArtifact((current) => (current === filename ? null : filename));
   };
 
   return (
@@ -217,7 +236,15 @@ export default function PerformanceAIPage() {
                   </div>
                 </div>
 
-                {/* Live Backend Job Result Card */}
+                {/* Live Backend Job Result Card — scoped to the selected operation */}
+                {!job && !error && !isLoading && (
+                  <div className="saas-card" style={{ marginTop: '20px' }}>
+                    <div className="saas-card-body" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)' }}>
+                      No result yet for <strong style={{ color: '#FF5A00' }}>{activeOp}</strong>.
+                      Run this analysis to generate results.
+                    </div>
+                  </div>
+                )}
                 <AgentExecutionResult
                   executionMeta={
                     job
@@ -235,8 +262,7 @@ export default function PerformanceAIPage() {
                   response={job ? { data: job } : null}
                   agentColor="#FF5A00"
                   simulatedData={
-                    result?.visualizations?.length ? (
-                      <div style={{ marginTop: '12px' }}>
+                    result?.visualizations?.length ? (                      <div style={{ marginTop: '12px' }}>
                         <div
                           style={{
                             fontSize: '0.72rem',
@@ -253,23 +279,96 @@ export default function PerformanceAIPage() {
                               <th>Chart</th>
                               <th>File</th>
                               <th>Size</th>
+                              <th style={{ width: '28px' }} />
                             </tr>
                           </thead>
                           <tbody>
-                            {result.visualizations.map((viz) => (
-                              <tr key={viz.name}>
-                                <td style={{ fontFamily: 'JetBrains Mono', color: '#FF5A00' }}>{viz.name}</td>
-                                <td style={{ fontFamily: 'JetBrains Mono' }}>{viz.filename}</td>
-                                <td style={{ fontFamily: 'JetBrains Mono' }}>
-                                  {(viz.size_bytes / 1024).toFixed(1)} KB
-                                </td>
-                              </tr>
-                            ))}
+                            {result.visualizations.map((viz) => {
+                              const isExpanded = expandedArtifact === viz.filename;
+
+                              return (
+                                <React.Fragment key={viz.filename}>
+                                  <tr
+                                    onClick={() => toggleArtifact(viz.filename)}
+                                    style={{ cursor: 'pointer' }}
+                                  >
+                                    <td style={{ fontFamily: 'JetBrains Mono', color: '#FF5A00' }}>
+                                      {viz.name}
+                                    </td>
+                                    <td style={{ fontFamily: 'JetBrains Mono' }}>{viz.filename}</td>
+                                    <td style={{ fontFamily: 'JetBrains Mono' }}>
+                                      {(viz.size_bytes / 1024).toFixed(1)} KB
+                                    </td>
+                                    <td
+                                      style={{
+                                        fontFamily: 'JetBrains Mono',
+                                        color: 'rgba(255,255,255,0.5)',
+                                        textAlign: 'right',
+                                      }}
+                                    >
+                                      {isExpanded ? '▾' : '▸'}
+                                    </td>
+                                  </tr>
+                                  {/* Expanded panel lives inside the table so the
+                                      rows below it shift down naturally. */}
+                                  {isExpanded && (
+                                    <tr>
+                                      <td colSpan={4} style={{ padding: '0 0 12px 0' }}>
+                                        <div
+                                          style={{
+                                            padding: '12px',
+                                            background: 'rgba(255,255,255,0.02)',
+                                            border: '1px solid rgba(255,255,255,0.06)',
+                                            borderRadius: '6px',
+                                            textAlign: 'center',
+                                          }}
+                                        >
+                                          {imageErrors[viz.filename] ? (
+                                            <div
+                                              style={{
+                                                fontSize: '0.75rem',
+                                                color: '#F87171',
+                                                padding: '16px 0',
+                                              }}
+                                            >
+                                              Unable to load {viz.filename}.
+                                            </div>
+                                          ) : (
+                                            <img
+                                              src={performanceService.artifactUrl(
+                                                jobId,
+                                                viz.filename,
+                                              )}
+                                              alt={`${viz.name} chart`}
+                                              loading="lazy"
+                                              onError={() =>
+                                                setImageErrors((prev) => ({
+                                                  ...prev,
+                                                  [viz.filename]: true,
+                                                }))
+                                              }
+                                              style={{
+                                                maxWidth: '100%',
+                                                width: 'auto',
+                                                height: 'auto',
+                                                objectFit: 'contain',
+                                                borderRadius: '4px',
+                                                background: '#fff',
+                                              }}
+                                            />
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
                           </tbody>
                         </table>
                         <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '10px', lineHeight: 1.5 }}>
-                          Charts are written on the server. There is no endpoint serving the image
-                          files yet, so only metadata is shown here.
+                          Select a chart to load its image. Charts load on demand,
+                          one at a time.
                         </div>
                       </div>
                     ) : null

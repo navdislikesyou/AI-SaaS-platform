@@ -185,6 +185,69 @@ class JobManager:
         self._tasks.clear()
 
     # ------------------------------------------------------------------
+    # Artifacts
+    # ------------------------------------------------------------------
+
+    def resolve_artifact(self, job_id: str, filename: str) -> Path | None:
+        """Resolve one generated chart to a readable path.
+
+        Security rests on an allowlist, not on sanitizing the client's input.
+        The filename must match an entry the job itself reported in its
+        ``visualizations`` result, so a client cannot name an arbitrary file.
+        The name is additionally required to be a bare filename, and the
+        resolved path must still sit inside this job's visualization directory
+        once symlinks and relative segments are collapsed. All three checks must
+        pass.
+
+        Args:
+            job_id: The job whose artifacts are being requested.
+            filename: The bare artifact filename, e.g. ``channel_profit.png``.
+
+        Returns:
+            An absolute path to the artifact, or None when the job is unknown,
+            has not produced charts, or the filename is not one of its own.
+        """
+        job = self._jobs.get(job_id)
+
+        if job is None or not job.result:
+            return None
+
+        visualizations = job.result.get("visualizations")
+
+        if not isinstance(visualizations, list):
+            return None
+
+        # Allowlist: only names this job actually generated are servable.
+        if not any(
+            isinstance(entry, dict) and entry.get("filename") == filename
+            for entry in visualizations
+        ):
+            return None
+
+        # Must be a bare filename: no directory component at all.
+        if not filename or Path(filename).name != filename:
+            return None
+
+        if filename in (".", "..") or Path(filename).is_absolute():
+            return None
+
+        directory = self._visualization_dir(job_id).resolve()
+
+        try:
+            candidate = (directory / filename).resolve()
+        except OSError:
+            return None
+
+        # Final containment check, after collapsing any relative segments.
+        if candidate.parent != directory:
+            return None
+
+        if not candidate.is_file():
+            return None
+
+        return candidate
+
+    # ------------------------------------------------------------------
     # Submission
     # ------------------------------------------------------------------
 
@@ -277,6 +340,12 @@ class JobManager:
 
         finally:
             job.completed_at = utc_now()
+
+            # One history record per job, emitted only on the terminal
+            # transition. This block runs exactly once per job, so repeated
+            # GET polls cannot produce duplicates.
+            self._record_activity(job)
+
             logger.info(
                 "performance_job_finished job_id=%s status=%s",
                 job.job_id,
@@ -422,6 +491,49 @@ class JobManager:
             "generated": len(artifacts),
             "visualizations": artifacts,
         }
+
+    @staticmethod
+    def _record_activity(job: Job) -> None:
+        """Record one Performance job outcome in the Activity History.
+
+        Only metadata is stored. The result payload, chart metadata, and the
+        dataset path are all deliberately excluded.
+
+        Args:
+            job: The job that just reached a terminal state.
+        """
+        status = job.status.value
+
+        if status not in ("completed", "failed"):
+            return
+
+        description: str | None = None
+
+        # An integer chart count is metadata, not content.
+        if job.operation == "visualize" and status == "completed":
+            generated = (job.result or {}).get("generated")
+
+            if isinstance(generated, int):
+                description = f"Generated {generated} visualizations"
+
+        duration_ms: int | None = None
+
+        if job.started_at and job.completed_at:
+            duration_ms = int((job.completed_at - job.started_at).total_seconds() * 1000)
+
+        try:
+            from app.services.activity_store import record_operation
+
+            record_operation(
+                agent="performance",
+                operation=job.operation,
+                status=status,
+                duration_ms=duration_ms,
+                description=description,
+            )
+
+        except Exception:
+            logger.warning("activity_record_failed agent=performance", exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers

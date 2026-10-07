@@ -1,14 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { performanceService, TERMINAL_JOB_STATUSES } from '../services/performanceService';
 
 const POLL_INTERVAL_MS = 1000;
 
+/** Empty execution slice, shared so callers get a stable identity. */
+const EMPTY_EXECUTION = Object.freeze({
+  job: null,
+  jobId: null,
+  status: null,
+  result: null,
+  error: null,
+  isSubmitting: false,
+  isPolling: false,
+  isLoading: false,
+});
+
 /**
- * Submit a Performance job and poll until it reaches a terminal state.
+ * Submit Performance jobs and poll them to a terminal state.
  *
- * Performance analysis runs on the backend as a background job, so the result
- * is not available when the request returns. This hook owns the poll loop and
- * stops once the job reports `completed` or `failed`.
+ * State is tracked **per operation**, keyed by the operation name that created
+ * the job. Five operations are selectable and each keeps its own job id, status,
+ * result, and error, so switching between them never shows one operation's
+ * result under another. Polling continues for operations that are not currently
+ * on screen: switching tabs does not cancel anything, and a job submitted
+ * earlier keeps running and keeps updating its own entry.
+ *
+ * Starting a new job for an operation replaces only that operation's state.
+ * The others are left untouched.
  *
  * Job submission is deliberately NOT gated on the agent catalog's `available`
  * flag: PERFORMANCE_AGENT_ENABLED only controls the catalog entry, while the
@@ -17,14 +35,29 @@ const POLL_INTERVAL_MS = 1000;
  * No client-side timeout is applied, matching the backend, which currently
  * enforces no time limit on a Performance job.
  */
-export function usePerformanceJob() {
-  const [job, setJob] = useState(null);
-  const [jobId, setJobId] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
-  const [error, setError] = useState(null);
+/**
+ * Return one operation's execution, with `status` and `result` derived.
+ *
+ * `job` stays the complete job object. `result` is the job's own inner
+ * `result` payload -- what an operation actually computed, e.g.
+ * `{generated, visualizations}` for a visualize job. Callers render from
+ * `result`; they must not reach into `job.result` themselves, or the whole
+ * job envelope leaks into a result renderer.
+ */
+function withDerivedFields(slice) {
+  return {
+    ...slice,
+    status: slice.job?.status || null,
+    result: slice.job?.result || null,
+  };
+}
 
-  const timerRef = useRef(null);
+export function usePerformanceJob() {
+  const [executions, setExecutions] = useState({});
+
+  // Timers keyed by operation so each poll loop is independent. A ref, because
+  // rescheduling must not trigger a re-render.
+  const timersRef = useRef({});
   const mountedRef = useRef(true);
   // Held in a ref so the poll function can reschedule itself without
   // referencing its own initialization.
@@ -35,51 +68,68 @@ export function usePerformanceJob() {
 
     return () => {
       mountedRef.current = false;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
+      Object.keys(timersRef.current).forEach((operation) => {
+        clearTimeout(timersRef.current[operation]);
+      });
+      timersRef.current = {};
     };
   }, []);
 
-  const poll = useCallback(async (id) => {
-    if (!mountedRef.current) return;
+  /** Merge a delta into one operation's slice, leaving others alone. */
+  const patch = useCallback((operation, delta) => {
+    setExecutions((previous) => ({
+      ...previous,
+      [operation]: { ...EMPTY_EXECUTION, ...previous[operation], ...delta },
+    }));
+  }, []);
 
-    try {
-      const next = await performanceService.getJob(id);
-
-      if (!mountedRef.current) return;
-
-      setJob(next);
-
-      if (TERMINAL_JOB_STATUSES.includes(next?.status)) {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-        setIsPolling(false);
-
-        if (next.status === 'failed') {
-          setError({
-            message: next.error || 'The job failed.',
-            code: 'JOB_FAILED',
-            status: 500,
-          });
-        }
-        return;
-      }
-
-      timerRef.current = setTimeout(() => pollRef.current?.(id), POLL_INTERVAL_MS);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      setIsPolling(false);
-      setError(err);
+  /** Cancel one operation's poll loop. Scoped by operation on purpose. */
+  const clearTimer = useCallback((operation) => {
+    if (timersRef.current[operation]) {
+      clearTimeout(timersRef.current[operation]);
+      delete timersRef.current[operation];
     }
   }, []);
+
+  const poll = useCallback(
+    async (operation, id) => {
+      if (!mountedRef.current) return;
+
+      try {
+        const next = await performanceService.getJob(id);
+
+        if (!mountedRef.current) return;
+
+        patch(operation, { job: next, jobId: id });
+
+        if (TERMINAL_JOB_STATUSES.includes(next?.status)) {
+          clearTimer(operation);
+
+          if (next.status === 'failed') {
+            patch(operation, {
+              isPolling: false,
+              error: {
+                message: next.error || 'The job failed.',
+                code: 'JOB_FAILED',
+                status: 500,
+              },
+            });
+          }
+          return;
+        }
+
+        timersRef.current[operation] = setTimeout(
+          () => pollRef.current?.(operation, id),
+          POLL_INTERVAL_MS,
+        );
+      } catch (err) {
+        if (!mountedRef.current) return;
+        clearTimer(operation);
+        patch(operation, { isPolling: false, error: err });
+      }
+    },
+    [clearTimer, patch],
+  );
 
   useEffect(() => {
     pollRef.current = poll;
@@ -87,74 +137,85 @@ export function usePerformanceJob() {
 
   const submit = useCallback(
     async (operation, filePath) => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      setIsPolling(false);
-      setError(null);
-      setJob(null);
-      setJobId(null);
-      setIsSubmitting(true);
+      // Only this operation's loop is cancelled. Any other operation keeps
+      // running in the background.
+      clearTimer(operation);
+
+      patch(operation, {
+        job: null,
+        jobId: null,
+        error: null,
+        isSubmitting: true,
+        isPolling: false,
+      });
 
       try {
         const created = await performanceService.createJob(operation, filePath);
 
         if (!mountedRef.current) return null;
 
-        setJobId(created.job_id);
-        setJob(created);
-        setIsSubmitting(false);
+        patch(operation, {
+          jobId: created.job_id,
+          job: created,
+          isSubmitting: false,
+        });
 
         if (TERMINAL_JOB_STATUSES.includes(created?.status)) {
           if (created.status === 'failed') {
-            setError({
-              message: created.error || 'The job failed.',
-              code: 'JOB_FAILED',
-              status: 500,
+            patch(operation, {
+              error: {
+                message: created.error || 'The job failed.',
+                code: 'JOB_FAILED',
+                status: 500,
+              },
             });
           }
           return created;
         }
 
-        setIsPolling(true);
-        timerRef.current = setTimeout(() => pollRef.current?.(created.job_id), POLL_INTERVAL_MS);
+        patch(operation, { isPolling: true });
+        timersRef.current[operation] = setTimeout(
+          () => pollRef.current?.(operation, created.job_id),
+          POLL_INTERVAL_MS,
+        );
 
         return created;
       } catch (err) {
         if (mountedRef.current) {
-          setError(err);
+          patch(operation, { isSubmitting: false, error: err });
         }
-        setIsSubmitting(false);
         return null;
       }
     },
-    [],
+    [clearTimer, patch],
   );
 
-  const reset = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setJob(null);
-    setJobId(null);
-    setIsSubmitting(false);
-    setIsPolling(false);
-    setError(null);
-  }, []);
+  /** Drop one operation's state entirely. */
+  const resetOperation = useCallback(
+    (operation) => {
+      clearTimer(operation);
+      patch(operation, EMPTY_EXECUTION);
+    },
+    [clearTimer, patch],
+  );
+
+  const getExecution = useCallback(
+    (operation) => withDerivedFields(executions[operation] || EMPTY_EXECUTION),
+    [executions],
+  );
+
+  const isAnyRunning = useMemo(
+    () =>
+      Object.values(executions).some((entry) => entry.isSubmitting || entry.isPolling),
+    [executions],
+  );
 
   return {
     submit,
-    reset,
-    job,
-    jobId,
-    status: job?.status || null,
-    result: job?.result || null,
-    error,
-    isSubmitting,
-    isPolling,
-    isLoading: isSubmitting || isPolling,
+    resetOperation,
+    getExecution,
+    executions,
+    isAnyRunning,
   };
 }
 
