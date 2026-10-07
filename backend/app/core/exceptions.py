@@ -103,6 +103,18 @@ class AgentTimeoutError(AppError):
     error_code = "AGENT_TIMEOUT"
 
 
+class JobNotFoundError(AppError):
+    """Raised when a requested background job does not exist.
+
+    Covers both a job id that was never issued and one belonging to a job
+    dropped by a process restart, which is indistinguishable to a client while
+    the in-memory store is process-local.
+    """
+
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = "JOB_NOT_FOUND"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the shared exception handlers to an application.
 

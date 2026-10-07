@@ -11,7 +11,8 @@ import AgentDirectoryPage from './pages/AgentDirectoryPage';
 import HiringAIPage from './pages/HiringAIPage';
 import ResearchAIPage from './pages/ResearchAIPage';
 import KnowledgeAIPage from './pages/KnowledgeAIPage';
-import CommunicationAIPage from './pages/CommunicationAIPage';
+import AutomationAIPage from './pages/AutomationAIPage';
+import PerformanceAIPage from './pages/PerformanceAIPage';
 import InsightsAIPage from './pages/InsightsAIPage';
 import OrganizationPage from './pages/OrganizationPage';
 import SettingsPage from './pages/SettingsPage';
@@ -79,10 +80,26 @@ function AppRoutes() {
           }
         />
         <Route
+          path="/agents/automation"
+          element={
+            <ProtectedRoute>
+              <AutomationAIPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/agents/communication"
           element={
             <ProtectedRoute>
-              <CommunicationAIPage />
+              <AutomationAIPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/agents/performance"
+          element={
+            <ProtectedRoute>
+              <PerformanceAIPage />
             </ProtectedRoute>
           }
         />

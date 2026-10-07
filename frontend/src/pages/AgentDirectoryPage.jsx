@@ -1,158 +1,282 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { useAuth } from '../context/AuthContext';
+import {
+  Cpu,
+  BookOpen,
+  Zap,
+  BarChart3,
+  Search,
+  ArrowRight,
+} from 'lucide-react';
 import Navigation from '../components/Navigation';
-
-const AGENTS = [
-  {
-    id: 'hiring',
-    num: '01',
-    name: 'HIRING AI',
-    tagline: 'Find the right people, without the manual work.',
-    description: 'AI-powered candidate analysis, resume screening, job matching, and intelligent recruitment workflows.',
-    capabilities: ['Resume Analysis', 'Candidate Matching', 'Skill Assessment', 'AI Recommendations', 'Pipeline Tracking'],
-    path: '/agents/hiring',
-    color: '#FF5A00',
-    bg: '#0d0400',
-  },
-  {
-    id: 'research',
-    num: '02',
-    name: 'RESEARCH AI',
-    tagline: 'Turn complex papers into useful intelligence.',
-    description: 'Upload research papers and extract summaries, key findings, methodologies, and topic relevance scores automatically.',
-    capabilities: ['Paper Analysis', 'Topic Relevance', 'Key Findings', 'Research Quality Score', 'Reference Mapping'],
-    path: '/agents/research',
-    color: '#f5f4f0',
-    bg: '#000414',
-  },
-  {
-    id: 'knowledge',
-    num: '03',
-    name: 'KNOWLEDGE AI',
-    tagline: 'Ask your organization anything.',
-    description: 'A RAG-powered enterprise knowledge system. Query documents, handbooks, policies, and internal knowledge bases instantly.',
-    capabilities: ['Document Retrieval', 'Policy Search', 'Context-Aware Answers', 'Source Citations', 'Permission-Based Access'],
-    path: '/agents/knowledge',
-    color: '#E8FF72',
-    bg: '#090a00',
-  },
-  {
-    id: 'communication',
-    num: '04',
-    name: 'COMMUNICATION AI',
-    tagline: 'Turn communication into automation.',
-    description: 'Intelligent scheduling, meeting automation, participant coordination, and post-meeting intelligence generation.',
-    capabilities: ['Meeting Scheduling', 'Link Generation', 'Participant Notification', 'Reminder Automation', 'MoM Generation'],
-    path: '/agents/communication',
-    color: '#4a9dc4',
-    bg: '#000a0d',
-  },
-  {
-    id: 'insights',
-    // num: '05',
-    name: 'INSIGHTS AI',
-    tagline: 'Understand how your organization works.',
-    description: 'Editorial analytics and organizational intelligence — AI usage metrics, workflow performance, agent utilization, and time savings.',
-    capabilities: ['Usage Analytics', 'Agent Performance', 'Workflow Activity', 'Time Saved Metrics', 'Team Intelligence'],
-    path: '/agents/insights',
-    color: '#FFFBE8',
-    bg: '#0a0a08',
-  },
-];
+import { useAgents } from '../hooks/useAgents';
 
 export default function AgentDirectoryPage() {
-  const { canAccess, accessLevel } = useAuth();
   const navigate = useNavigate();
+  const { agents, isLoading } = useAgents();
+
+  const [filter, setFilter] = useState('all'); // 'all', 'backend', 'roadmap'
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredAgents = agents.filter((agent) => {
+    if (filter === 'backend' && !agent.isBackend) return false;
+    if (filter === 'roadmap' && !agent.isRoadmap) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchName = agent.name.toLowerCase().includes(q);
+      const matchDesc = agent.description?.toLowerCase().includes(q);
+      const matchCap = agent.capabilities?.some((c) => c.toLowerCase().includes(q));
+      return matchName || matchDesc || matchCap;
+    }
+    return true;
+  });
+
+  const getAgentIcon = (id, color) => {
+    switch (id) {
+      case 'knowledge':
+        return <BookOpen size={20} color={color} />;
+      case 'automation':
+        return <Zap size={20} color={color} />;
+      case 'performance':
+        return <BarChart3 size={20} color={color} />;
+      default:
+        return <Cpu size={20} color={color} />;
+    }
+  };
 
   return (
-    <div className="agdir-page">
+    <div className="saas-workbench">
       <Navigation />
-      <main className="agdir-main">
-        {/* Hero */}
-        <motion.div
-          className="agdir-hero"
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.9 }}
-        >
-          <div className="agdir-hero-label">AI Agents</div>
-          <h1 className="agdir-hero-heading">YOUR AI<br />WORKFORCE</h1>
-          <p className="agdir-hero-sub">Specialized intelligence for specialized work.</p>
-        </motion.div>
 
-        <div className="agdir-divider" />
+      <main className="saas-main-container">
+        {/* Topbar */}
+        <div className="saas-topbar">
+          <div className="saas-breadcrumb">
+            <span className="saas-breadcrumb-item">Workspace</span>
+            <span className="saas-breadcrumb-sep">/</span>
+            <span className="saas-breadcrumb-active">AI Assistants</span>
+          </div>
 
-        {/* Agent blocks */}
-        <div className="agdir-list">
-          {AGENTS.map((agent, i) => {
-            const hasAccess = canAccess(agent.id);
-            const level = accessLevel(agent.id);
-            return (
-              <motion.div
-                key={agent.id}
-                className={`agdir-block ${!hasAccess ? 'locked' : ''}`}
-                initial={{ opacity: 0, y: 40 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: i * 0.1 }}
-                style={{ '--agent-color': agent.color, '--agent-bg': agent.bg }}
+          <div className="saas-topbar-actions">
+            <span
+              style={{
+                fontSize: '0.75rem',
+                padding: '4px 10px',
+                borderRadius: '4px',
+                background: 'rgba(255,255,255,0.05)',
+                color: '#f4f4f5',
+                border: '1px solid rgba(255,255,255,0.1)',
+              }}
+            >
+              Total Assistants: {agents.length}
+            </span>
+          </div>
+        </div>
+
+        {/* Page Body */}
+        <div className="saas-page-body">
+          {/* Header */}
+          <div className="saas-page-header">
+            <div className="saas-page-title-wrap">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Cpu size={22} color="#E8FF72" />
+                <h1 className="saas-page-title">AI Assistants Catalog</h1>
+              </div>
+              <p className="saas-page-subtitle">
+                Explore specialized AI assistants available for your team to automate tasks, answer questions, and analyze data.
+              </p>
+            </div>
+          </div>
+
+          {/* Filter & Search Bar */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <div className="saas-tabs-bar" style={{ marginBottom: 0, borderBottom: 'none' }}>
+              <button
+                className={`saas-tab-btn ${filter === 'all' ? 'active' : ''}`}
+                onClick={() => setFilter('all')}
               >
-                <div className="agdir-block-inner">
-                  {/* Left: Number + meta */}
-                  <div className="agdir-block-meta">
-                    <span className="agdir-block-num">{agent.num}</span>
-                    {!hasAccess && (
-                      <div className="agdir-block-locked-label">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                        </svg>
-                        Restricted
+                All Assistants ({agents.length})
+              </button>
+              <button
+                className={`saas-tab-btn ${filter === 'backend' ? 'active' : ''}`}
+                onClick={() => setFilter('backend')}
+              >
+                Active Now (3)
+              </button>
+              <button
+                className={`saas-tab-btn ${filter === 'roadmap' ? 'active' : ''}`}
+                onClick={() => setFilter('roadmap')}
+              >
+                Coming Soon (2)
+              </button>
+            </div>
+
+            <div style={{ position: 'relative', width: '280px' }}>
+              <Search size={14} color="rgba(255,255,255,0.4)" style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)' }} />
+              <input
+                type="text"
+                className="saas-input"
+                placeholder="Search assistant or feature..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ paddingLeft: '34px', fontSize: '0.8rem', padding: '7px 12px 7px 34px' }}
+              />
+            </div>
+          </div>
+
+          {/* Loading state */}
+          {isLoading && (
+            <div style={{ padding: '60px', textAlign: 'center', color: 'rgba(255,255,255,0.5)', fontSize: '0.85rem' }}>
+              Loading AI Assistants...
+            </div>
+          )}
+
+          {/* Cards Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '16px' }}>
+            {filteredAgents.map((agent) => (
+              <div
+                key={agent.id}
+                className="saas-card"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  transition: 'all 0.2s ease',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)')}
+              >
+                <div>
+                  <div className="saas-card-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div
+                        style={{
+                          width: '34px',
+                          height: '34px',
+                          borderRadius: '8px',
+                          background: `${agent.color}15`,
+                          border: `1px solid ${agent.color}30`,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        {getAgentIcon(agent.id, agent.color)}
                       </div>
-                    )}
-                    {level === 'limited' && (
-                      <div className="agdir-block-limited-label">Limited</div>
-                    )}
-                  </div>
+                      <div>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#fafafa', fontFamily: 'Syne' }}>
+                          {agent.name}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.45)' }}>
+                          {agent.isBackend ? 'Active in Workspace' : 'Coming in Future Update'}
+                        </div>
+                      </div>
+                    </div>
 
-                  {/* Center: Content */}
-                  <div className="agdir-block-content">
-                    <h2 className="agdir-block-name">{agent.name}</h2>
-                    <p className="agdir-block-tagline">{agent.tagline}</p>
-                    <p className="agdir-block-desc">{agent.description}</p>
-
-                    <div className="agdir-capabilities">
-                      {agent.capabilities.map(cap => (
-                        <span key={cap} className="agdir-cap-tag">{cap}</span>
-                      ))}
+                    <div>
+                      {agent.isBackend ? (
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            padding: '3px 8px',
+                            borderRadius: '4px',
+                            background: 'rgba(16, 185, 129, 0.12)',
+                            color: '#10B981',
+                            border: '1px solid rgba(16, 185, 129, 0.25)',
+                            fontWeight: '600',
+                          }}
+                        >
+                          ACTIVE
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            padding: '3px 8px',
+                            borderRadius: '4px',
+                            background: 'rgba(255,255,255,0.05)',
+                            color: 'rgba(255,255,255,0.5)',
+                            border: '1px solid rgba(255,255,255,0.1)',
+                          }}
+                        >
+                          UPCOMING
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right: CTA or locked */}
-                  <div className="agdir-block-action">
-                    {hasAccess ? (
-                      <motion.button
-                        className="agdir-cta"
-                        onClick={() => navigate(agent.path)}
-                        whileHover={{ x: 4 }}
-                        transition={{ duration: 0.2 }}
-                      >
-                        OPEN WORKSPACE
-                        <span className="agdir-cta-arrow">→</span>
-                      </motion.button>
-                    ) : (
-                      <div className="agdir-locked-state">
-                        <p className="agdir-locked-msg">Access Restricted</p>
-                        <p className="agdir-locked-sub">You don't have permission to access this workspace.</p>
-                        <button className="agdir-request-btn">Request Access</button>
-                      </div>
-                    )}
+                  <div className="saas-card-body">
+                    <p style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5, marginBottom: '14px' }}>
+                      {agent.description}
+                    </p>
+
+                    <div style={{ marginBottom: '12px' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', display: 'block', marginBottom: '6px' }}>
+                        Key Features:
+                      </span>
+                      {agent.capabilities?.length ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                          {agent.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              style={{
+                                fontSize: '0.7rem',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                background: 'rgba(255,255,255,0.04)',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                color: '#d4d4d8',
+                              }}
+                            >
+                              {cap.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        // An agent with no capabilities is not broken; it is
+                        // served by a different endpoint. Surface that instead of
+                        // rendering an empty chip row.
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            background: 'rgba(255,255,255,0.04)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            color: '#d4d4d8',
+                          }}
+                        >
+                          {agent.executionPath === 'jobs'
+                            ? 'Runs as a background job'
+                            : 'No operations exposed'}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </motion.div>
-            );
-          })}
+
+                <div style={{ padding: '12px 18px', borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.01)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)' }}>
+                    {!agent.isBackend
+                      ? 'Planned assistant'
+                      : agent.executionPath === 'jobs'
+                        ? 'Served as a background job'
+                        : 'Ready to assist'}
+                  </span>
+
+                  <button
+                    className="saas-btn saas-btn-secondary"
+                    onClick={() => navigate(agent.path)}
+                    style={{ padding: '6px 14px', fontSize: '0.78rem' }}
+                  >
+                    <span>Open Assistant</span>
+                    <ArrowRight size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </main>
     </div>

@@ -39,13 +39,33 @@ const COMM_SCHEDULE = [
 ];
 
 export const activityService = {
-  async getRecentActivity() {
-    await apiClient.get('/activity/recent');
-    return ACTIVITY_FEED;
+  /**
+   * Fetch recent activity records.
+   *
+   * Reads the unified backend history covering Knowledge, Automation, and
+   * Performance. Records are lightweight metadata only, so nothing here has
+   * to render agent output. An empty history is a valid result, not an error,
+   * so the empty list is returned rather than a fabricated fallback feed.
+   *
+   * @param {number} limit Maximum number of records to return.
+   * @returns {Promise<Array<object>>} Records newest first.
+   */
+  async getActivityHistory(limit = 100) {
+    const res = await apiClient.get(`/activity-history?limit=${limit}`);
+    return res?.data || [];
   },
-  
+
+  async getRecentActivity() {
+    const res = await apiClient.get('/activity/recent');
+    return res?.data || ACTIVITY_FEED;
+  },
+
   async getCommunicationSchedule() {
-    await apiClient.get('/communication/schedule');
-    return COMM_SCHEDULE;
+    try {
+      const res = await apiClient.get('/communication/schedule');
+      return res?.data || COMM_SCHEDULE;
+    } catch {
+      return COMM_SCHEDULE;
+    }
   }
 };
