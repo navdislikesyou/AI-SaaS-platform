@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from app.agents.registry import AgentRegistry
 from app.core.config import Settings, get_settings
+from app.services.document_manifest import DocumentManifest
+from app.services.document_upload import DocumentUploadService
 from app.services.job_manager import JobManager
 from app.services.orchestrator import Orchestrator
 
 _registry: AgentRegistry | None = None
 _orchestrator: Orchestrator | None = None
 _job_manager: JobManager | None = None
+_upload_service: DocumentUploadService | None = None
+_document_manifest: DocumentManifest | None = None
 
 
 def get_settings_dep() -> Settings:
@@ -98,9 +102,40 @@ def init_job_manager(manager: JobManager) -> None:
     _job_manager = manager
 
 
+def get_document_upload_service() -> DocumentUploadService:
+    """Return the process-wide document upload service.
+
+    Created on first use so that an instance with no uploads never creates the
+    upload directory.
+
+    Returns:
+        The shared upload service.
+    """
+    global _upload_service
+    if _upload_service is None:
+        _upload_service = DocumentUploadService(get_settings())
+    return _upload_service
+
+
+def get_document_manifest() -> DocumentManifest:
+    """Return the process-wide uploaded document manifest.
+
+    Returns:
+        The shared document manifest store.
+    """
+    global _document_manifest
+    if _document_manifest is None:
+        _document_manifest = DocumentManifest(
+            get_settings().resolved_knowledge_upload_manifest_path
+        )
+    return _document_manifest
+
+
 def reset_state() -> None:
     """Clear the shared singletons. Intended for test isolation."""
-    global _registry, _orchestrator, _job_manager
+    global _registry, _orchestrator, _job_manager, _upload_service, _document_manifest
     _registry = None
     _orchestrator = None
     _job_manager = None
+    _upload_service = None
+    _document_manifest = None

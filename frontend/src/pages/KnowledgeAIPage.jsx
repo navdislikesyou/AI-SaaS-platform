@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useAgents } from '../hooks/useAgents';
+import { useDocumentUpload } from '../hooks/useDocumentUpload';
+import { useKnowledgeDocuments } from '../hooks/useKnowledgeDocuments';
 import { useLocation } from 'react-router-dom';
 import {
   BookOpen,
@@ -12,9 +14,13 @@ import {
   Database,
   CheckCircle2,
   Target,
-  Lightbulb,
+  AlertCircle,
   Compass,
 } from 'lucide-react';
+import {
+  UPLOAD_ACCEPT_ATTRIBUTE,
+  SUPPORTED_UPLOAD_LABEL,
+} from '../services/knowledgeService';
 import Navigation from '../components/Navigation';
 import { useAgentExecution } from '../hooks/useAgentExecution';
 import AgentExecutionResult from '../components/AgentExecutionResult';
@@ -26,53 +32,16 @@ const SAMPLE_QUERIES = [
   'What are the security compliance requirements for API keys?',
 ];
 
-const CORPUS_DOCUMENTS = [
-  {
-    id: 'doc_01',
-    name: 'Employee Handbook 2026.pdf',
-    category: 'HR & People',
-    chunks: 142,
-    size: '1.8 MB',
-    status: 'Indexed',
-    updated: 'Oct 2, 2026',
-  },
-  {
-    id: 'doc_02',
-    name: 'Remote Work & Hybrid Policy.docx',
-    category: 'Operations',
-    chunks: 48,
-    size: '520 KB',
-    status: 'Indexed',
-    updated: 'Sep 28, 2026',
-  },
-  {
-    id: 'doc_03',
-    name: 'Information Security Standards.pdf',
-    category: 'Legal & Security',
-    chunks: 218,
-    size: '3.4 MB',
-    status: 'Indexed',
-    updated: 'Oct 1, 2026',
-  },
-  {
-    id: 'doc_04',
-    name: 'Q3 Financial Overview.pdf',
-    category: 'Finance',
-    chunks: 86,
-    size: '1.2 MB',
-    status: 'Indexed',
-    updated: 'Sep 30, 2026',
-  },
-];
-
 const INGESTED_DOCS_KEY = 'saas_knowledge_ingested_docs';
 
 /**
- * Read documents ingested in a previous session.
+ * Read documents ingested by server path in a previous session.
  *
- * There is no backend endpoint that lists indexed documents, so successful
- * ingestions are recorded client-side. A missing, corrupt, or unavailable store
- * degrades to an empty list rather than breaking the page.
+ * Uploads are tracked by the backend manifest. This localStorage list remains
+ * only for documents indexed through the older `ingest_document` server-path
+ * route, which the backend still supports and which already put chunks in the
+ * vector store. Dropping it would make those documents disappear from the
+ * selector even though they remain queryable.
  *
  * @returns {Array<{filePath: string, timestamp: string, chunkCount?: number}>}
  */
@@ -93,7 +62,7 @@ function readIngestedDocs() {
 }
 
 /**
- * Record a successful ingestion and persist it.
+ * Record a successful server-path ingestion and persist it.
  *
  * Re-ingesting a path updates its timestamp instead of adding a duplicate.
  *
@@ -111,6 +80,41 @@ function registerIngestedDoc(doc) {
   }
 
   return next;
+}
+
+/**
+ * Describe an upload failure in terms the user can act on.
+ *
+ * The backend returns a specific message for each rejection (wrong type, too
+ * large, unreadable, agent offline). Anything it could not classify falls back
+ * to the status code, because a bare "Request failed" tells the user nothing.
+ *
+ * @param {Error|null} error
+ * @param {boolean} isUnavailable
+ * @returns {string}
+ */
+function describeUploadError(error, isUnavailable) {
+  if (!error) return '';
+
+  if (isUnavailable) {
+    return 'The Knowledge Agent is not connected. Start the backend with the agent enabled, then retry.';
+  }
+
+  if (error.code === 'VALIDATION_ERROR' && error.message) return error.message;
+
+  if (error.status === 0) {
+    return 'Could not reach the backend. Check that the API is running and try again.';
+  }
+
+  if (error.status === 504) {
+    return 'Indexing timed out. Try a smaller document.';
+  }
+
+  if (error.status === 502) {
+    return 'The document could not be indexed. Confirm it is a readable, text-based file rather than a scan.';
+  }
+
+  return error.message || `Upload failed with status ${error.status}.`;
 }
 
 /**
@@ -133,6 +137,22 @@ function formatTimestamp(iso) {
   }
 }
 
+/**
+ * Render a byte count for display, e.g. "1.8 MB".
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+
+  if (bytes < 1024) return `${bytes} B`;
+
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function KnowledgeAIPage() {
   const location = useLocation();
 
@@ -140,21 +160,56 @@ export default function KnowledgeAIPage() {
   // has been indexed.
   const [activeTab, setActiveTab] = useState('ingest');
   const [query, setQuery] = useState('');
-  // ingest_document takes a server-side path. There is no upload endpoint, so
-  // the operator states the path explicitly.
   const [ingestPath, setIngestPath] = useState('');
   const [ingestedDocs, setIngestedDocs] = useState(readIngestedDocs);
-  const [selectedDocPath, setSelectedDocPath] = useState('');
+  const [selectedDocId, setSelectedDocId] = useState('');
 
-  // Two independent execution states. query and ingest_document are separate
-  // operations with different payload shapes and different result renderings,
-  // so sharing one hook made each tab display whichever operation ran last.
+  // query and ingestion are separate operations with different payload shapes
+  // and different result renderings, so each keeps its own state. Sharing one
+  // hook made each tab display whichever operation ran last.
   const queryExec = useAgentExecution();
   const ingestExec = useAgentExecution();
+
+  const fileInputRef = useRef(null);
+  const {
+    selectedFile,
+    selectFile,
+    isUploading,
+    indexedDocument,
+    error: uploadError,
+    upload,
+  } = useDocumentUpload();
+
+  const {
+    documents,
+    failedDocuments,
+    error: documentsError,
+    addDocument,
+  } = useKnowledgeDocuments();
 
   const { agents } = useAgents();
   const knowledgeAgent = agents.find((a) => a.id === 'knowledge');
   const knowledgeCapabilities = knowledgeAgent?.capabilities || [];
+
+  // The selector lists uploaded documents plus anything indexed earlier
+  // through the server-path route. Both are queryable: the vector store does
+  // not care how a document got there.
+  const selectorOptions = [
+    ...documents.map((doc) => ({
+      id: doc.document_id,
+      label: doc.filename,
+      detail: formatTimestamp(doc.uploaded_at),
+      source: 'upload',
+    })),
+    ...ingestedDocs.map((doc) => ({
+      id: doc.filePath,
+      label: doc.filePath,
+      detail: formatTimestamp(doc.timestamp),
+      source: 'server-path',
+    })),
+  ];
+
+  const selectedDocument = selectorOptions.find((doc) => doc.id === selectedDocId) || null;
 
   React.useEffect(() => {
     if (location.state?.query) {
@@ -172,6 +227,20 @@ export default function KnowledgeAIPage() {
     // Backend query takes { question } only. It runs against the Knowledge
     // vector store, so no file_path is sent.
     await queryExec.execute('knowledge', 'query', { question: text });
+  };
+
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    selectFile(file);
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile || isUploading) return;
+
+    const document = await upload();
+
+    // Only a document the backend reports as indexed joins the selector.
+    if (document) addDocument(document);
   };
 
   const handleIngest = async () => {
@@ -193,7 +262,7 @@ export default function KnowledgeAIPage() {
           chunkCount: result.data.data.chunk_count,
         }),
       );
-      setSelectedDocPath(path);
+      setSelectedDocId(path);
     }
   };
 
@@ -215,6 +284,9 @@ export default function KnowledgeAIPage() {
   const ingestOp = ingestExec.response?.data;
   const ingestResult =
     ingestOp?.operation === 'ingest_document' ? ingestOp.data : null;
+
+  const uploadErrorMessage = describeUploadError(uploadError, false);
+  const indexedDocumentCount = documents.length;
 
   return (
     <div className="saas-workbench">
@@ -281,7 +353,7 @@ export default function KnowledgeAIPage() {
               onClick={() => setActiveTab('corpus')}
             >
               <Database size={15} />
-              <span>Company Documents ({CORPUS_DOCUMENTS.length})</span>
+              <span>Company Documents ({indexedDocumentCount})</span>
             </button>
             <button
               className={`saas-tab-btn ${activeTab === 'seam' ? 'active' : ''}`}
@@ -323,7 +395,7 @@ export default function KnowledgeAIPage() {
                   <div className="saas-card-body">
                     <div className="saas-input-group">
                       <label className="saas-label">Ingested Document</label>
-                      {ingestedDocs.length === 0 ? (
+                      {selectorOptions.length === 0 ? (
                         <div
                           style={{
                             padding: '14px',
@@ -336,31 +408,27 @@ export default function KnowledgeAIPage() {
                           }}
                         >
                           No documents ingested yet. Go to the{' '}
-                          <strong>Ingest Document</strong> tab to index a document before
-                          asking questions.
+                          <strong>Ingest Document</strong> tab to upload and index a
+                          document before asking questions.
                         </div>
                       ) : (
                         <>
                           <select
                             className="saas-input"
-                            value={selectedDocPath}
-                            onChange={(e) => setSelectedDocPath(e.target.value)}
+                            value={selectedDocId}
+                            onChange={(e) => setSelectedDocId(e.target.value)}
                             disabled={queryExec.isLoading}
                           >
                             <option value="">Select an ingested document…</option>
-                            {ingestedDocs.map((doc) => (
-                              <option key={doc.filePath} value={doc.filePath}>
-                                {doc.filePath} — Ingested: {formatTimestamp(doc.timestamp)}
+                            {selectorOptions.map((doc) => (
+                              <option key={`${doc.source}-${doc.id}`} value={doc.id}>
+                                {doc.label} — Indexed: {doc.detail}
                               </option>
                             ))}
                           </select>
-                          {selectedDocPath && (
+                          {selectedDocument && (
                             <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px' }}>
-                              {selectedDocPath} — Ingested:{' '}
-                              {formatTimestamp(
-                                ingestedDocs.find((doc) => doc.filePath === selectedDocPath)
-                                  ?.timestamp,
-                              )}
+                              {selectedDocument.label} — Indexed: {selectedDocument.detail}
                             </div>
                           )}
                           <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px' }}>
@@ -410,9 +478,9 @@ export default function KnowledgeAIPage() {
                       <button
                         className="saas-btn saas-btn-primary"
                         onClick={() => handleSearch()}
-                        disabled={!query.trim() || !selectedDocPath || queryExec.isLoading}
+                        disabled={!query.trim() || !selectedDocId || queryExec.isLoading}
                         title={
-                          !selectedDocPath && ingestedDocs.length > 0
+                          !selectedDocId && selectorOptions.length > 0
                             ? 'Select an ingested document first'
                             : undefined
                         }
@@ -477,7 +545,7 @@ export default function KnowledgeAIPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Timeout Limit:</span>
-                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>120.0 seconds</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: '#f4f4f5' }}>300.0 seconds</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: '8px' }}>
                       <span style={{ color: 'rgba(255,255,255,0.45)' }}>Supported Formats:</span>
@@ -525,7 +593,7 @@ export default function KnowledgeAIPage() {
             </div>
           )}
 
-          {/* TAB 2: Ingest Document */}
+{/* TAB 2: Ingest Document */}
           {activeTab === 'ingest' && (
             <div className="saas-workbench-grid">
               <div>
@@ -534,6 +602,182 @@ export default function KnowledgeAIPage() {
                     <div className="saas-card-title">
                       <Upload size={16} color="#E8FF72" />
                       <span>Ingest a Document</span>
+                    </div>
+                  </div>
+
+                  <div className="saas-card-body">
+                    <div className="saas-input-group">
+                      <label className="saas-label" htmlFor="knowledge-upload-input">
+                        Document File
+                      </label>
+
+                      <input
+                        id="knowledge-upload-input"
+                        ref={fileInputRef}
+                        type="file"
+                        className="saas-input"
+                        accept={UPLOAD_ACCEPT_ATTRIBUTE}
+                        onChange={handleFileChange}
+                        disabled={isUploading}
+                      />
+
+                      <div
+                        style={{
+                          fontSize: '0.7rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '6px',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Accepted formats: <code>{SUPPORTED_UPLOAD_LABEL}</code>. The file is
+                        stored on the server under a generated name and indexed for
+                        question answering. {selectedFile ? (
+                          <>
+                            Selected: <strong>{selectedFile.name}</strong>{' '}
+                            ({formatBytes(selectedFile.size)})
+                          </>
+                        ) : (
+                          'No file selected yet.'
+                        )}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginTop: '12px',
+                      }}
+                    >
+                      <span
+                        style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}
+                      >
+                        {indexedDocumentCount} indexed document
+                        {indexedDocumentCount === 1 ? '' : 's'}
+                      </span>
+                      <button
+                        className="saas-btn"
+                        onClick={handleUpload}
+                        disabled={!selectedFile || isUploading}
+                        style={{ background: '#E8FF72', color: '#000', fontWeight: 600 }}
+                      >
+                        <Upload size={14} />
+                        <span>
+                          {isUploading ? 'Uploading & Indexing...' : 'Upload Document'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {isUploading && (
+                      <div
+                        role="status"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(232,255,114,0.08)',
+                          border: '1px solid rgba(232,255,114,0.25)',
+                          fontSize: '0.82rem',
+                          color: '#f4f4f5',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: '12px',
+                            height: '12px',
+                            borderRadius: '50%',
+                            border: '2px solid rgba(232,255,114,0.35)',
+                            borderTopColor: '#E8FF72',
+                            animation: 'spin 0.8s linear infinite',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span>
+                          Uploading and indexing {selectedFile?.name}. Chunking and
+                          embedding can take a moment on large documents.
+                        </span>
+                      </div>
+                    )}
+
+                    {uploadErrorMessage && (
+                      <div
+                        role="alert"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(239,68,68,0.08)',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                          fontSize: '0.82rem',
+                          color: '#fecaca',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        <AlertCircle size={16} color="#EF4444" style={{ flexShrink: 0 }} />
+                        <span>{uploadErrorMessage}</span>
+                      </div>
+                    )}
+
+                    {indexedDocument && !isUploading && (
+                      <div
+                        role="status"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(232,255,114,0.08)',
+                          border: '1px solid rgba(232,255,114,0.25)',
+                          fontSize: '0.82rem',
+                          color: '#f4f4f5',
+                        }}
+                      >
+                        <CheckCircle2 size={16} color="#E8FF72" style={{ flexShrink: 0 }} />
+                        <span>
+                          Indexed &ldquo;{indexedDocument.filename}&rdquo; as{' '}
+                          {indexedDocument.chunk_count} chunk
+                          {indexedDocument.chunk_count === 1 ? '' : 's'}. Switch to Ask a
+                          Question to query it.
+                        </span>
+                      </div>
+                    )}
+
+                    {documentsError && (
+                      <div
+                        role="alert"
+                        style={{
+                          marginTop: '14px',
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(245,158,11,0.08)',
+                          border: '1px solid rgba(245,158,11,0.3)',
+                          fontSize: '0.78rem',
+                          color: '#fde68a',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Could not load the indexed document list:{' '}
+                        {documentsError.message}. Uploads still work.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Server-path ingestion, kept for documents indexed before upload existed. */}
+                <div className="saas-card">
+                  <div className="saas-card-header">
+                    <div className="saas-card-title">
+                      <FileText size={16} color="#E8FF72" />
+                      <span>Ingest by Server Path</span>
                     </div>
                   </div>
 
@@ -550,23 +794,22 @@ export default function KnowledgeAIPage() {
                         disabled={ingestExec.isLoading}
                       />
                       <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px', lineHeight: 1.5 }}>
-                        Relative paths resolve from the <code>backend/</code> directory. Supported
-                        formats: <code>.pdf</code>, <code>.docx</code>, <code>.txt</code>. The server
-                        reads the file directly, so it must already exist on disk. Browser file
-                        upload is not available.
+                        For operators indexing a document already on the server.
+                        Relative paths resolve from the <code>backend/</code> directory.
+                        Prefer the upload control above for browser uploads.
                       </div>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
                       <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}>
                         {ingestedDocs.length} document
-                        {ingestedDocs.length === 1 ? '' : 's'} ingested from this browser
+                        {ingestedDocs.length === 1 ? '' : 's'} indexed from this browser
                       </span>
                       <button
                         className="saas-btn"
                         onClick={handleIngest}
                         disabled={!ingestPath.trim() || ingestExec.isLoading}
-                        style={{ background: '#E8FF72', color: '#000', fontWeight: 600 }}
+                        style={{ background: 'rgba(232,255,114,0.12)', color: '#E8FF72', fontWeight: 600 }}
                       >
                         <Upload size={14} />
                         <span>{ingestExec.isLoading ? 'Ingesting...' : 'Ingest Document'}</span>
@@ -632,64 +875,89 @@ export default function KnowledgeAIPage() {
                   <span>Indexed Document Inventory</span>
                 </div>
 
-                <button
-                  className="saas-btn saas-btn-primary"
-                  onClick={() => setActiveTab('ingest')}
-                  style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-                >
-                  <Upload size={14} />
-                  <span>Ingest New Document</span>
-                </button>
-              </div>
+<button
+              className="saas-btn saas-btn-primary"
+              onClick={() => setActiveTab('ingest')}
+              style={{ padding: '6px 12px', fontSize: '0.75rem' }}
+            >
+              <Upload size={14} />
+              <span>Ingest New Document</span>
+            </button>
+          </div>
 
-              <div style={{ padding: '12px 20px 0', fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>
-                Illustrative inventory. The backend exposes no operation that lists indexed
-                documents, so these rows are placeholders rather than live query results.
-              </div>
+          <div style={{ padding: '12px 20px 0', fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>
+            Documents this backend instance has ingested. Chunk counts are what
+            was committed to the vector store at upload time. Local development
+            storage, so this list is not shared across deployments.
+          </div>
 
-              <table className="saas-table">
-                <thead>
-                  <tr>
-                    <th>Document Name</th>
-                    <th>Category</th>
-                    <th>Embedded Chunks</th>
-                    <th>File Size</th>
-                    <th>Status</th>
-                    <th>Last Synchronized</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {CORPUS_DOCUMENTS.map((doc) => (
-                    <tr key={doc.id}>
-                      <td style={{ fontWeight: 500, color: '#fafafa', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <FileText size={15} color="#E8FF72" />
-                        <span>{doc.name}</span>
-                      </td>
-                      <td>{doc.category}</td>
-                      <td style={{ fontFamily: 'JetBrains Mono' }}>{doc.chunks} vectors</td>
-                      <td style={{ fontFamily: 'JetBrains Mono' }}>{doc.size}</td>
-                      <td>
-                        <span
-                          style={{
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: '0.65rem',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            background: 'rgba(232,255,114,0.1)',
-                            color: '#E8FF72',
-                            border: '1px solid rgba(232,255,114,0.25)',
-                          }}
-                        >
-                          {doc.status}
-                        </span>
-                      </td>
-                      <td style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.75rem' }}>{doc.updated}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {documents.length === 0 && failedDocuments.length === 0 ? (
+            <div
+              style={{
+                padding: '28px 20px',
+                fontSize: '0.8rem',
+                color: 'rgba(255,255,255,0.55)',
+                textAlign: 'center',
+              }}
+            >
+              No documents indexed yet. Use Ingest New Document to upload a PDF,
+              DOCX, or TXT file.
             </div>
+          ) : (
+            <table className="saas-table">
+              <thead>
+                <tr>
+                  <th>Document Name</th>
+                  <th>Format</th>
+                  <th>Embedded Chunks</th>
+                  <th>File Size</th>
+                  <th>Status</th>
+                  <th>Last Synchronized</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...documents, ...failedDocuments].map((doc) => (
+                  <tr key={`${doc.status}-${doc.document_id}`}>
+                    <td style={{ fontWeight: 500, color: '#fafafa', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <FileText size={15} color="#E8FF72" />
+                      <span>{doc.filename}</span>
+                    </td>
+                    <td style={{ fontFamily: 'JetBrains Mono' }}>{doc.extension}</td>
+                    <td style={{ fontFamily: 'JetBrains Mono' }}>
+                      {doc.chunk_count ? `${doc.chunk_count} vectors` : '—'}
+                    </td>
+                    <td style={{ fontFamily: 'JetBrains Mono' }}>{formatBytes(doc.size_bytes)}</td>
+                    <td>
+                      <span
+                        style={{
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: '0.65rem',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background:
+                            doc.status === 'indexed'
+                              ? 'rgba(232,255,114,0.1)'
+                              : 'rgba(239,68,68,0.1)',
+                          color: doc.status === 'indexed' ? '#E8FF72' : '#fca5a5',
+                          border:
+                            doc.status === 'indexed'
+                              ? '1px solid rgba(232,255,114,0.25)'
+                              : '1px solid rgba(239,68,68,0.25)',
+                        }}
+                      >
+                        {doc.status === 'indexed' ? 'Indexed' : 'Failed'}
+                      </span>
+                    </td>
+                    <td style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.75rem' }}>
+                      {formatTimestamp(doc.uploaded_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
+        </div>
+      )}
 
           {/* TAB 4: What This Assistant Does (User Guide) */}
           {activeTab === 'seam' && (
@@ -777,19 +1045,19 @@ export default function KnowledgeAIPage() {
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(232,255,114,0.15)', color: '#E8FF72', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         1
                       </span>
-                      <span>Go to the <strong>Ask a Question</strong> tab and type your question or click one of the quick suggestions.</span>
+                      <span>Go to the <strong>Ingest Document</strong> tab, choose a PDF, DOCX, or TXT file, and click <strong>Upload Document</strong>. The assistant extracts, chunks, and indexes it.</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(232,255,114,0.15)', color: '#E8FF72', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         2
                       </span>
-                      <span>Click <strong>Ask Assistant</strong> to receive the response along with referenced documents.</span>
+                      <span>Go to <strong>Ask a Question</strong>, select the document you just indexed, type your question or click a quick suggestion.</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(232,255,114,0.15)', color: '#E8FF72', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         3
                       </span>
-                      <span>Browse the <strong>Company Documents</strong> tab anytime to see all indexed documents and team guides.</span>
+                      <span>Browse the <strong>Company Documents</strong> tab anytime to see every document this instance has indexed, with chunk counts and status.</span>
                     </div>
                   </div>
                 </div>

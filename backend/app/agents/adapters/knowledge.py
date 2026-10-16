@@ -13,6 +13,7 @@ dict-out methods.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from app.agents.base import AgentAdapter
@@ -187,7 +188,9 @@ class KnowledgeAgentAdapter(AgentAdapter):
         if operation == "ingest_document":
             return service.ingest(cleaned["file_path"])
 
-        return service.query(cleaned["question"])
+        result = service.query(cleaned["question"])
+
+        return _with_public_sources(result)
 
     def _require_service(self) -> Any:
         """Return the connected service.
@@ -206,6 +209,49 @@ class KnowledgeAgentAdapter(AgentAdapter):
                 details={"agent": self.name, "status": "not_initialized"},
             )
         return self._service
+
+
+def _with_public_sources(result: Any) -> dict[str, Any]:
+    """Replace absolute source paths with bare filenames in a query result.
+
+    ``query`` returns one ``source`` per citation, and the loader records
+    whatever path it was handed. For an uploaded document that is the absolute
+    path of the generated stored file, which must not reach a browser: it leaks
+    the server's directory layout and shows the user a UUID instead of the
+    document they uploaded.
+
+    Only the display string changes. Retrieval, chunk identity, and citation
+    order are untouched, so existing behaviour is preserved. A source that is
+    already relative, such as one ingested by server path through
+    ``/agents/execute``, is left exactly as it was.
+
+    Args:
+        result: The raw service result.
+
+    Returns:
+        A copy of the result whose citation sources are display-safe. A result
+        without sources is returned unchanged.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    sources = result.get("sources")
+
+    if not isinstance(sources, list):
+        return result
+
+    sanitized = [dict(entry) if isinstance(entry, dict) else entry for entry in sources]
+
+    for entry in sanitized:
+        if not isinstance(entry, dict):
+            continue
+
+        source = entry.get("source")
+
+        if isinstance(source, str) and Path(source).is_absolute():
+            entry["source"] = Path(source).name
+
+    return {**result, "sources": sanitized}
 
 
 def validate_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:

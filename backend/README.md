@@ -180,6 +180,7 @@ app/
 │       ├── router.py    aggregates v1 routers
 │       ├── health.py    /health, /ready
 │       ├── agents.py    /agents, /agents/{name}, /agents/execute
+│       ├── knowledge.py /knowledge/documents (multipart upload + list)
 │       └── performance.py  /performance/jobs, /performance/jobs/{job_id}
 ├── core/
 │   ├── config.py        pydantic-settings, no os.environ elsewhere
@@ -189,6 +190,7 @@ app/
 ├── schemas/
 │   ├── common.py        APIResponse, ErrorDetail, health, readiness
 │   ├── agent.py         agent info, execute request/response
+│   ├── knowledge.py     uploaded document models
 │   └── performance.py   job request/response, job status enum
 ├── agents/
 │   ├── base.py          AgentAdapter ABC, concurrency limiting, placeholder base
@@ -197,6 +199,8 @@ app/
 │   └── adapters/        knowledge, automation, performance
 └── services/
     ├── orchestrator.py  dispatch only
+    ├── document_upload.py  validates uploads, writes them under generated names
+    ├── document_manifest.py  JSON metadata for uploaded documents
     └── job_manager.py   in-process background jobs for Performance
 ```
 
@@ -366,6 +370,84 @@ the API boundary:
 }
 ```
 
+### `POST /api/v1/knowledge/documents`
+
+Upload a document and index it into the Knowledge vector store. `multipart/form-data`
+with a single `file` field. Accepts **PDF, DOCX, TXT**.
+
+Returns **201 Created** only after the document has been extracted, chunked,
+embedded, and added to Chroma:
+
+```json
+{
+  "success": true,
+  "data": {
+    "document": {
+      "document_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41",
+      "filename": "Employee Handbook.pdf",
+      "extension": ".pdf",
+      "size_bytes": 1843200,
+      "status": "indexed",
+      "chunk_count": 142,
+      "uploaded_at": "2026-10-13T14:22:01+05:30"
+    },
+    "message": "'Employee Handbook.pdf' indexed as 142 chunks."
+  },
+  "message": null,
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+No filesystem path appears in the response. The stored filename is internal and
+is never returned.
+
+Validation happens in three layers, because each catches a different lie:
+
+| Check | Rejects with |
+|---|---|
+| Extension allowlist (`.pdf`, `.docx`, `.txt`) | 422 `VALIDATION_ERROR` |
+| Size limit, enforced while streaming | 422 with `details.max_bytes` |
+| Content signature and structure | 422 `VALIDATION_ERROR` |
+| Zero bytes, or text with no content | 422 `VALIDATION_ERROR` |
+
+The stored filename is generated server-side as `<uuid4>_<sanitized stem><ext>`
+and opened with `O_EXCL`, so a client cannot choose where a file lands, cannot
+traverse out of the upload directory, and cannot overwrite an earlier upload.
+
+If ingestion fails, the stored file is deleted and the document is recorded in
+the manifest with `"status": "failed"` rather than `"indexed"`. A failed upload
+is never reported as a success, and never appears as a selectable document.
+
+Status codes: 201 indexed, 422 rejected or produced no indexable text, 502 agent
+failed, 503 Knowledge Agent not connected, 504 indexing timed out.
+
+### `GET /api/v1/knowledge/documents`
+
+List documents this instance has ingested, newest first. An empty manifest
+returns an empty list rather than an error.
+
+### Upload storage is a local MVP
+
+Uploaded files live in `KNOWLEDGE_UPLOAD_DIR` on the machine running the API,
+and metadata lives in a JSON manifest beside them. Both are gitignored. This is
+a deliberate development choice, **not** deployment-ready storage:
+
+- Files are not shared between instances, so a multi-worker or multi-host
+  deployment will index a document on one instance and not find it on another.
+- Storage is bounded only by disk. There is no quota, no retention policy, and
+  no cleanup job.
+- The manifest is a single JSON file, so concurrent writes across processes are
+  not safe.
+
+A deployment needs persistent shared storage (object storage or a volume) and a
+real metadata store. Only `app/services/document_upload.py` and
+`app/services/document_manifest.py` need to change; the router and the agent
+pipeline do not, because the agent only ever sees a path.
+
+There is **no delete operation**. A document can be uploaded and listed, but
+nothing removes it from disk or from Chroma. Do not describe a document as
+deleted or removed unless that endpoint is implemented.
+
 ### `POST /api/v1/performance/jobs`
 
 Submit a Performance Analyzer job. Returns **202 Accepted** immediately; the
@@ -500,6 +582,9 @@ environment. See `.env.example`. Notable keys:
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `console` | `LOG_FORMAT=json` for shipping |
 | `*_AGENT_ENABLED` | `false` | Set true to attempt constructing that agent at startup |
 | `KNOWLEDGE_CHROMA_PATH` | `knowledge_agent/data/chroma_db` | Vector store directory; relative paths resolve from `backend/` |
+| `KNOWLEDGE_UPLOAD_DIR` | `uploads/knowledge` | Where uploaded documents are stored; local disk, see below |
+| `KNOWLEDGE_UPLOAD_MANIFEST_PATH` | `uploads/knowledge/documents.json` | Document metadata manifest |
+| `KNOWLEDGE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Upload size limit, enforced while streaming |
 | `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |
@@ -607,9 +692,10 @@ rather than milliseconds should follow that pattern instead.
 
 Authentication, authorization, RBAC, and per-user data — `app/api/deps.py` is
 the seam; add a dependency there rather than editing each route. Also pending:
-database and persistence, agent-specific upload and dataset endpoints, file
-storage, an endpoint that serves Performance visualization files, streaming
-responses (SSE), rate limiting, and LLM-based agent routing.
+database and persistence, Performance dataset upload endpoints, a durable or
+shared file store for Knowledge uploads (see below), document deletion, an
+endpoint that serves Performance visualization files, streaming responses (SSE),
+rate limiting, and LLM-based agent routing.
 
 To add a synchronous agent: implement `AgentAdapter`, register it in
 `app/agents/factory.py`, and add a description in `app/api/v1/agents.py`. No

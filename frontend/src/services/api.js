@@ -22,9 +22,15 @@ async function request(endpoint, options = {}) {
     ? endpoint
     : `${BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
+  // FormData must not carry an explicit Content-Type: the browser has to set
+  // it itself so the multipart boundary matches the body it is sending. Setting
+  // it to application/json here is the classic cause of "multipart/form-data
+  // parsing failed" on the server.
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+
   const headers = {
     'Accept': 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.body && !isFormData ? { 'Content-Type': 'application/json' } : {}),
     ...options.headers,
   };
 
@@ -96,6 +102,21 @@ export const apiClient = {
 
   delete(endpoint, options = {}) {
     return request(endpoint, { ...options, method: 'DELETE' });
+  },
+
+  /**
+   * POST a multipart/form-data body.
+   *
+   * The body is passed through untouched so the browser can generate the
+   * multipart boundary. Never JSON-stringify a FormData here.
+   *
+   * @param {string} endpoint
+   * @param {FormData} formData
+   * @param {object} [options]
+   * @returns {Promise<object>}
+   */
+  postForm(endpoint, formData, options = {}) {
+    return request(endpoint, { ...options, method: 'POST', body: formData });
   },
 
   // Helper endpoints
