@@ -213,6 +213,83 @@ describe('KnowledgeAIPage upload tab', () => {
   });
 });
 
+describe('KnowledgeAIPage file format guidance', () => {
+  it('states the accepted formats and the size limit', async () => {
+    renderPage();
+
+    const box = (await screen.findByText('Preparing your document')).closest(
+      '.saas-info-box'
+    );
+
+    expect(box).toHaveTextContent(/\.pdf/);
+    expect(box).toHaveTextContent(/\.docx/);
+    expect(box).toHaveTextContent(/\.txt/);
+    expect(box).toHaveTextContent(/25\s*MB/);
+  });
+
+  it('separates what is required from what is only recommended', async () => {
+    renderPage();
+
+    const box = (await screen.findByText('Preparing your document')).closest(
+      '.saas-info-box'
+    );
+
+    expect(box.querySelectorAll('.saas-info-req').length).toBeGreaterThan(0);
+    expect(box.querySelectorAll('.saas-info-opt').length).toBeGreaterThan(0);
+
+    // The readability rule and the 25 MB cap are requirements; headings and
+    // tables are advice. Asserting on the copy keeps the two from being
+    // silently swapped.
+    expect(box).toHaveTextContent(/no OCR step/i);
+    expect(box).toHaveTextContent(/do not guarantee a better answer/i);
+    expect(box).toHaveTextContent(/row by row/i);
+  });
+
+  it('does not claim a citation verifies the answer', async () => {
+    renderPage();
+
+    const box = (await screen.findByText('Preparing your document')).closest(
+      '.saas-info-box'
+    );
+
+    expect(box).toHaveTextContent(/They do not verify the answer/i);
+  });
+
+  it('keeps the example structure collapsed until asked for', async () => {
+    const user = userEvent.setup();
+
+    renderPage();
+
+    const toggle = await screen.findByRole('button', {
+      name: /Example structure/i,
+    });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(/Employee Leave Policy/)).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(screen.getByText(/Employee Leave Policy/)).toBeInTheDocument();
+    expect(screen.getByText(/Handbook\.docx/)).toBeInTheDocument();
+  });
+
+  it('presents the example as a recommendation, not a template', async () => {
+    renderPage();
+
+    expect(screen.getByRole('button', { name: /Example structure/i })).toHaveTextContent(
+      /recommended, not required/i
+    );
+  });
+
+  it('places the guidance inside the document ingestion card', async () => {
+    renderPage();
+
+    const card = (await screen.findByLabelText('Document File')).closest('.saas-card');
+
+    expect(card).toContainElement(screen.getByText('Preparing your document'));
+  });
+});
+
 describe('KnowledgeAIPage document selector', () => {
   it('offers an already indexed document for questioning', async () => {
     const user = userEvent.setup();

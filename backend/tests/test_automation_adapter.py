@@ -94,12 +94,19 @@ class FakeAutomationService:
         }
         self._error = error
         self.calls: list[str] = []
+        self.rosters: list[list[dict[str, str]] | None] = []
 
-    def execute(self, instruction: str) -> dict[str, Any]:
+    def execute(
+        self,
+        instruction: str,
+        employees: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         """Return the configured result.
 
         Args:
             instruction: Instruction forwarded by the adapter.
+            employees: Employee records the adapter resolved, or None when the
+                packaged directory is in use.
 
         Returns:
             The configured result.
@@ -108,6 +115,7 @@ class FakeAutomationService:
             Exception: The configured error, when one was set.
         """
         self.calls.append(instruction)
+        self.rosters.append(employees)
         if self._error is not None:
             raise self._error
         return self._result
@@ -200,16 +208,18 @@ def build_client(settings: Settings, adapters: list[Any]) -> AsyncClient:
 async def test_draft_action_returns_expected_dict_shape(
     adapter: AutomationAgentAdapter,
 ) -> None:
-    """A successful draft returns meeting, recipients, and email keys."""
+    """A successful draft returns meeting, recipients, email, and directory keys."""
     result = await adapter.execute(
         "draft_action",
         {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"},
     )
 
-    assert set(result) == {"meeting", "recipients", "email"}
+    assert set(result) == {"meeting", "recipients", "email", "directory"}
     assert isinstance(result["meeting"], dict)
     assert isinstance(result["recipients"], list)
     assert isinstance(result["email"], str)
+    assert result["directory"]["source"] == "default"
+    assert result["directory"]["directory_id"] is None
 
 
 async def test_draft_action_forwards_the_instruction(
@@ -222,6 +232,7 @@ async def test_draft_action_forwards_the_instruction(
     await adapter.execute("draft_action", {"instruction": instruction})
 
     assert service.calls == [instruction]
+    assert service.rosters == [None]
 
 
 async def test_draft_action_returns_a_draft_rather_than_a_sent_receipt(
@@ -517,7 +528,12 @@ async def test_api_returns_the_draft_result(settings: Settings) -> None:
     data = response.json()["data"]
     assert data["agent"] == "automation"
     assert data["operation"] == "draft_action"
-    assert set(data["data"]) == {"meeting", "recipients", "email"}
+    assert set(data["data"]) == {"meeting", "recipients", "email", "directory"}
+    assert data["data"]["directory"] == {
+        "directory_id": None,
+        "source": "default",
+        "employee_count": None,
+    }
 
 
 @pytest.mark.parametrize(

@@ -115,6 +115,19 @@ class JobNotFoundError(AppError):
     error_code = "JOB_NOT_FOUND"
 
 
+class DirectoryNotFoundError(AppError):
+    """Raised when an uploaded employee directory cannot be used.
+
+    Covers a directory id that was never issued and one whose stored file is
+    gone. The two are deliberately indistinguishable to a client: telling them
+    apart would confirm whether a given identifier ever existed, which is a small
+    amount of information about a roster nobody is authorized to see.
+    """
+
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = "DIRECTORY_NOT_FOUND"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the shared exception handlers to an application.
 

@@ -24,6 +24,7 @@ import {
 import Navigation from '../components/Navigation';
 import { useAgentExecution } from '../hooks/useAgentExecution';
 import AgentExecutionResult from '../components/AgentExecutionResult';
+import FormatInfoBox, { FormatInfoSample } from '../components/FormatInfoBox';
 
 const SAMPLE_QUERIES = [
   'What is our employee leave policy?',
@@ -641,6 +642,65 @@ export default function KnowledgeAIPage() {
                         )}
                       </div>
                     </div>
+
+                    <FormatInfoBox
+                      title="Preparing your document"
+                      accent="#E8FF72"
+                      accentRgb="232, 255, 114"
+                      examples={[
+                        {
+                          label: 'Example structure (recommended, not required)',
+                          content: (
+                            <FormatInfoSample label="Handbook.docx">
+                              {`Employee Leave Policy
+1. Overview
+   Who this policy applies to, and how leave is
+   requested and approved.
+2. Annual leave
+   Entitlement, carry-over, and notice periods.
+3. Sick leave
+   Notification and medical documentation.`}
+                            </FormatInfoSample>
+                          ),
+                        },
+                      ]}
+                    >
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        A <code>.pdf</code>, <code>.docx</code>, or <code>.txt</code>{' '}
+                        file, at most 25&nbsp;MB. Any other extension is rejected
+                        before the file is read.
+                      </p>
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        The document must contain text that can actually be read.
+                        A scan or a photo of a page has no text behind it, and
+                        there is no OCR step, so such a file is rejected as
+                        producing no indexable text. Export from the original
+                        document instead of scanning it.
+                      </p>
+                      <p>
+                        <span className="saas-info-opt">Recommended</span>
+                        Give sections descriptive headings and keep paragraphs
+                        short. The document is split into fixed-size chunks, so a
+                        heading that names its section can travel with the text
+                        beneath it. This is a recommendation for readability
+                        only &mdash; headings do not guarantee a better answer.
+                      </p>
+                      <p>
+                        <span className="saas-info-opt">Recommended</span>
+                        Avoid tables where you can. Text extraction reads a table
+                        row by row and the columns lose their meaning, which can
+                        make an answer from a table look confident and be wrong.
+                        Restating a short table as a labelled list is more
+                        reliable.
+                      </p>
+                      <p className="saas-info-note">
+                        Citations show which file and page an answer was drawn
+                        from. They do not verify the answer &mdash; check the
+                        wording against the document before relying on it.
+                      </p>
+                    </FormatInfoBox>
 
                     <div
                       style={{

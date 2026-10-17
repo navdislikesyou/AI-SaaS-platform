@@ -17,6 +17,10 @@ part of a name, so ``"invite Navneet Verma"`` also matched ``"Pulkita Verma"``
 because both contain ``"verma"``. Full names now take precedence, with
 first-name matching as a fallback so ``"Omkar"`` still resolves.
 
+Relative dates and online venues are covered separately below. The short version:
+``"for tomorrow"`` needs a literal ``" in "`` to reach the venue pattern, so an
+online request lost both its date and its venue.
+
 The module under test imports ``langchain_ollama`` at module scope, which is an
 optional agent dependency. It is stubbed here so these regression tests run in a
 plain CI environment.
@@ -26,6 +30,7 @@ from __future__ import annotations
 
 import sys
 import types
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -60,7 +65,38 @@ def _stub_optional_llm_dependency() -> None:
 
 _stub_optional_llm_dependency()
 
-from automation_agent.automation_agent import AutomationAgent  # noqa: E402
+from automation_agent import automation_agent as automation_agent_module  # noqa: E402
+from automation_agent.automation_agent import (  # noqa: E402
+    AutomationAgent,
+    _tomorrow,
+)
+
+
+class _FrozenDatetime:
+    """A ``datetime`` stand-in whose ``now()`` never moves.
+
+    Month rollover cannot be reached from the real clock without waiting for the
+    right day, so the date is pinned here instead.
+
+    Args:
+        frozen: The day to report.
+    """
+
+    def __init__(self, frozen: date) -> None:
+        """Store the pinned day.
+
+        Args:
+            frozen: The day to report.
+        """
+        self._frozen = frozen
+
+    def now(self) -> datetime:
+        """Return midday on the pinned day.
+
+        Returns:
+            A datetime on the pinned day.
+        """
+        return datetime.combine(self._frozen, datetime.min.time())
 
 
 class StubLLM:
@@ -107,9 +143,10 @@ def test_time_is_not_parsed_as_a_date(
     """A clock time must leave the date unspecified.
 
     Regression test: ``"9 AM"`` matched the old date pattern because ``AM`` is
-    a word, so the date came back as the time.
+    a word, so the date came back as the time. The instruction carries no other
+    date word, so nothing else can fill the field.
     """
-    meeting = agent.parse_instruction(f"Schedule a standup tomorrow at 9 {meridiem} with Omkar")
+    meeting = agent.parse_instruction(f"Schedule a standup at 9 {meridiem} with Omkar")
 
     assert meeting["date"] == "Not Specified"
     assert meeting["time"] == f"9 {meridiem}"
@@ -117,7 +154,7 @@ def test_time_is_not_parsed_as_a_date(
 
 def test_colon_time_is_not_parsed_as_a_date(agent: AutomationAgent) -> None:
     """A ``HH:MM`` time does not become the date either."""
-    meeting = agent.parse_instruction("Standup tomorrow at 2:30 PM with Omkar")
+    meeting = agent.parse_instruction("Standup at 2:30 PM with Omkar")
 
     assert meeting["date"] == "Not Specified"
     assert meeting["time"] == "2:30 PM"
@@ -167,16 +204,202 @@ def test_date_and_time_are_parsed_independently(agent: AutomationAgent) -> None:
     assert meeting["venue"] == "Conference Room A"
 
 
-def test_non_numeric_date_is_left_unspecified(agent: AutomationAgent) -> None:
-    """A natural-language date is not guessed at.
+@pytest.mark.parametrize(
+    "phrase",
+    ["next Monday", "next week", "some day soon", "later this month"],
+)
+def test_other_relative_dates_are_still_left_unspecified(
+    agent: AutomationAgent,
+    phrase: str,
+) -> None:
+    """A relative day the parser does not understand is not guessed at.
 
-    The parser only understands numeric dates. Returning "Not Specified" is
-    correct; inventing "tomorrow" would be a guess.
+    ``"tomorrow"`` is resolved because it has exactly one meaning. Anything
+    vaguer has several, and inventing one would put a wrong date in a draft.
     """
-    meeting = agent.parse_instruction("Schedule a standup tomorrow at 9 AM")
+    meeting = agent.parse_instruction(f"Schedule a standup {phrase} at 9 AM")
 
     assert meeting["date"] == "Not Specified"
     assert meeting["time"] == "9 AM"
+
+
+# --------------------------------------------------------------------------
+# Relative dates and online venues
+# --------------------------------------------------------------------------
+
+
+def test_tomorrow_is_resolved_to_the_next_calendar_day(
+    agent: AutomationAgent,
+) -> None:
+    """``"tomorrow"`` becomes tomorrow's date, derived from the current day.
+
+    The expected value is computed the same way rather than written down, so the
+    test stays correct on any day it runs.
+    """
+    expected = date.today() + timedelta(days=1)
+    expected_text = f"{expected.day} {expected.strftime('%B')}"
+
+    meeting = agent.parse_instruction("Draft an invitation for tomorrow at 9 AM")
+
+    assert meeting["date"] == expected_text
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["tomorrow", "Tomorrow", "TOMORROW", "tomorrow's standup"],
+)
+def test_tomorrow_is_matched_regardless_of_case(
+    agent: AutomationAgent,
+    phrase: str,
+) -> None:
+    """The word is matched case-insensitively, like every other term.
+
+    Args:
+        agent: The agent under test.
+        phrase: The spelling to try.
+    """
+    expected = date.today() + timedelta(days=1)
+
+    meeting = agent.parse_instruction(f"Draft an invitation for {phrase}")
+
+    assert meeting["date"] == f"{expected.day} {expected.strftime('%B')}"
+
+
+def test_tomorrow_rolls_over_into_the_next_month(
+    agent: AutomationAgent,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last day of a month resolves to the first of the next one.
+
+    Naive arithmetic on the day number would produce an impossible date here.
+    """
+    monkeypatch.setattr(automation_agent_module, "datetime", _FrozenDatetime(date(2026, 12, 31)))
+
+    assert _tomorrow() == "1 January"
+
+
+def test_tomorrow_does_not_disturb_the_time(agent: AutomationAgent) -> None:
+    """A relative date and a clock time are captured independently."""
+    expected = date.today() + timedelta(days=1)
+
+    meeting = agent.parse_instruction("Schedule a standup tomorrow at 2:30 PM with Omkar")
+
+    assert meeting["date"] == f"{expected.day} {expected.strftime('%B')}"
+    assert meeting["time"] == "2:30 PM"
+
+
+def test_online_meeting_without_a_platform(agent: AutomationAgent) -> None:
+    """An online meeting with no platform named reports a generic venue.
+
+    No joining link is invented, because one has to come from whoever owns the
+    call.
+    """
+    meeting = agent.parse_instruction(
+        "draft an invitation mail for tomorrow to attend the online meeting with omkar"
+    )
+
+    assert meeting["venue"] == "Online meeting"
+    assert "http" not in meeting["venue"]
+
+
+def test_virtual_meeting_is_also_recognized(agent: AutomationAgent) -> None:
+    """ "Virtual" means the same thing and produces the same venue."""
+    meeting = agent.parse_instruction("Draft an invitation for a virtual meeting")
+
+    assert meeting["venue"] == "Online meeting"
+
+
+@pytest.mark.parametrize(
+    "phrase,expected_venue",
+    [
+        pytest.param("Google Meet", "Google Meet", id="google_meet"),
+        pytest.param("google meet", "Google Meet", id="google_meet_lowercase"),
+        pytest.param("Zoom", "Zoom", id="zoom"),
+        pytest.param("zoom", "Zoom", id="zoom_lowercase"),
+        pytest.param("Microsoft Teams", "Microsoft Teams", id="microsoft_teams"),
+    ],
+)
+def test_a_named_platform_is_reported_as_the_venue(
+    agent: AutomationAgent,
+    phrase: str,
+    expected_venue: str,
+) -> None:
+    """A platform named in the request is the venue.
+
+    Args:
+        agent: The agent under test.
+        phrase: The platform wording to try.
+        expected_venue: The venue text it should produce.
+    """
+    meeting = agent.parse_instruction(f"Draft an invitation for a meeting on {phrase} tomorrow")
+
+    assert meeting["venue"] == expected_venue
+
+
+def test_the_bare_word_teams_is_not_treated_as_a_platform(
+    agent: AutomationAgent,
+) -> None:
+    """ "Teams" is also an ordinary plural noun in a workplace request.
+
+    Matching it would turn "invite the engineering teams" into a Microsoft Teams
+    meeting, so only the full product name counts.
+    """
+    meeting = agent.parse_instruction("Invite the engineering teams tomorrow")
+
+    assert meeting["venue"] == "Not Specified"
+
+
+def test_a_named_platform_wins_over_a_generic_online_phrase(
+    agent: AutomationAgent,
+) -> None:
+    """ "on Zoom" identifies the venue more precisely than "online meeting"."""
+    meeting = agent.parse_instruction("Draft an invitation for an online meeting on Zoom")
+
+    assert meeting["venue"] == "Zoom"
+
+
+def test_online_meeting_with_no_time_leaves_the_time_unspecified(
+    agent: AutomationAgent,
+) -> None:
+    """A request with no clock time must not invent one.
+
+    A guessed time is worse than an absent one: it is the field a reader acts on
+    first, and a wrong time sends people to a meeting that is not happening.
+    """
+    meeting = agent.parse_instruction(
+        "draft an invitation mail for tomorrow to attend the online meeting with omkar and pulkita"
+    )
+
+    assert meeting["time"] == "Not Specified"
+    assert meeting["date"] != "Not Specified"
+    assert meeting["venue"] == "Online meeting"
+
+
+def test_the_reported_instruction_resolves_every_field(
+    agent: AutomationAgent,
+) -> None:
+    """The exact instruction from the bug report parses as intended."""
+    expected = date.today() + timedelta(days=1)
+
+    meeting = agent.parse_instruction(
+        "draft an invitation mail for tomorrow to attend the online meeting with omkar and pulkita"
+    )
+
+    assert meeting["date"] == f"{expected.day} {expected.strftime('%B')}"
+    assert meeting["time"] == "Not Specified"
+    assert meeting["venue"] == "Online meeting"
+    assert sorted(meeting["attendees"]) == ["Omkar Shenwai", "Pulkita Verma"]
+
+
+def test_a_physical_venue_still_wins_when_no_platform_is_named(
+    agent: AutomationAgent,
+) -> None:
+    """Online detection must not swallow a room name."""
+    meeting = agent.parse_instruction(
+        "Schedule a client meeting in Conference Room A with Navneet Verma"
+    )
+
+    assert meeting["venue"] == "Conference Room A"
 
 
 # --------------------------------------------------------------------------
@@ -277,10 +500,10 @@ def test_full_name_takes_precedence_over_first_name_ambiguity(
 def test_full_instruction_parses_every_field(agent: AutomationAgent) -> None:
     """The reference instruction fills in every meeting field.
 
-    Ties the two fixes together: the time no longer leaks into the date, and
-    the named employee resolves to exactly one person.
+    Ties the fixes together: the time no longer leaks into the date, and the
+    named employee resolves to exactly one person.
     """
-    meeting = agent.parse_instruction("Schedule a standup tomorrow at 9 AM with Omkar")
+    meeting = agent.parse_instruction("Schedule a standup at 9 AM with Omkar")
 
     assert meeting == {
         "title": "Daily Standup",

@@ -52,6 +52,19 @@ class Settings(BaseSettings):
             each uploaded document. Holds no document contents and no vectors.
         knowledge_max_upload_bytes: Largest accepted upload, enforced while
             streaming so an oversized file is never fully buffered.
+        automation_upload_dir: Directory holding employee directories uploaded
+            through the Automation directory API. Relative paths resolve from
+            the backend directory. Local disk is a development-MVP choice, for
+            the same reasons as the Knowledge upload directory.
+        automation_upload_manifest_path: JSON manifest recording the metadata of
+            each uploaded employee directory. Holds no employee records; those
+            live in the upload directory.
+        automation_max_upload_bytes: Largest accepted employee directory upload.
+            These are small text files, so the limit is far lower than the
+            Knowledge document limit.
+        automation_max_directory_employees: Largest accepted employee count in
+            one directory. Bounds the work a single draft can do and the memory
+            one request may use.
         ollama_base_url: Base URL of the local Ollama server.
         ollama_model: Ollama model tag used for generation.
         knowledge_agent_timeout_seconds: Wall-clock budget for one Knowledge
@@ -100,6 +113,11 @@ class Settings(BaseSettings):
     knowledge_upload_dir: Path = Path("uploads/knowledge")
     knowledge_upload_manifest_path: Path = Path("uploads/knowledge/documents.json")
     knowledge_max_upload_bytes: int = 25 * 1024 * 1024
+
+    automation_upload_dir: Path = Path("uploads/automation")
+    automation_upload_manifest_path: Path = Path("uploads/automation/directories.json")
+    automation_max_upload_bytes: int = 2 * 1024 * 1024
+    automation_max_directory_employees: int = 5000
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
@@ -161,6 +179,24 @@ class Settings(BaseSettings):
             An absolute path to the JSON manifest.
         """
         return self.resolve_upload_path(self.knowledge_upload_manifest_path)
+
+    @property
+    def resolved_automation_upload_dir(self) -> Path:
+        """Return the directory that stores uploaded employee directories.
+
+        Returns:
+            An absolute path to the upload directory.
+        """
+        return self.resolve_upload_path(self.automation_upload_dir)
+
+    @property
+    def resolved_automation_upload_manifest_path(self) -> Path:
+        """Return the employee directory manifest file path.
+
+        Returns:
+            An absolute path to the JSON manifest.
+        """
+        return self.resolve_upload_path(self.automation_upload_manifest_path)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

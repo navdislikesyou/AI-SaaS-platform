@@ -256,11 +256,14 @@ async def test_automation_agent_drafts_a_real_invitation() -> None:
     assert response.status_code == 200, response.text
     data = response.json()["data"]["data"]
 
-    assert set(data) == {"meeting", "recipients", "email"}
+    assert set(data) == {"meeting", "recipients", "email", "directory", "employee_count"}
 
     meeting = data["meeting"]
     assert meeting["title"] == "Sprint Planning"
     assert meeting["attendees"] == ["Navneet Verma"]
+
+    assert data["directory"]["source"] == "default"
+    assert data["directory"]["directory_id"] is None
 
     assert data["email"].strip()
     assert "sent" not in data

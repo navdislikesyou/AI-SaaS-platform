@@ -16,6 +16,7 @@ import Navigation from '../components/Navigation';
 import { usePerformanceJob } from '../hooks/usePerformanceJob';
 import { PERFORMANCE_OPERATIONS, performanceService } from '../services/performanceService';
 import AgentExecutionResult from '../components/AgentExecutionResult';
+import FormatInfoBox, { FormatInfoSample } from '../components/FormatInfoBox';
 
 // Exactly the operations the backend job API accepts. No others are implemented.
 const OPERATION_OPTIONS = [
@@ -182,7 +183,7 @@ export default function PerformanceAIPage() {
                       />
                       <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px', lineHeight: 1.5 }}>
                         Relative paths resolve from the <code>backend/</code> directory. Supported
-                        formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>. The server
+                        formats: <code>.csv</code>, <code>.xlsx</code>. The server
                         reads the file directly, so it must already exist on disk.
                       </div>
                     </div>
@@ -439,6 +440,81 @@ export default function PerformanceAIPage() {
                     disabled={isLoading}
                   />
                 </div>
+
+                <FormatInfoBox
+                  title="Dataset format"
+                  accent="#FF5A00"
+                  accentRgb="255, 90, 0"
+                  examples={[
+                    {
+                      label: 'Example header row',
+                      content: (
+                        <div>
+                          <FormatInfoSample label="Financials.csv — header only">
+                            {`date,sales,profit,units_sold,employee_id,employee_name,department,product,region,customer_segment,sales_channel,sales_target,profit_target`}
+                          </FormatInfoSample>
+                          <p
+                            style={{
+                              margin: '8px 0 0',
+                              fontSize: '0.7rem',
+                              color: 'rgba(255,255,255,0.5)',
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            The bundled sample dataset adds year, month, company,
+                            business unit, employee role, manager, customer id,
+                            country, product id, product category, unit price,
+                            gross sales, discount, and cogs &mdash; enough for
+                            every operation this assistant supports.
+                          </p>
+                        </div>
+                      ),
+                    },
+                  ]}
+                >
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    A path the server can open. This assistant has no upload
+                    control: the dataset must already exist on the machine running
+                    the backend. A relative path resolves from the{' '}
+                    <code>backend/</code> directory.
+                  </p>
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    A <code>.csv</code> or <code>.xlsx</code> file. Only the first
+                    worksheet of a workbook is read, so split additional sheets
+                    into their own file if you need them. Header names are trimmed
+                    and lowercased with spaces turned into underscores, so{' '}
+                    <code>Sales Channel</code> is read as <code>sales_channel</code>.
+                  </p>
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    Columns are not uniform across operations. Only <code>compare_periods</code>{' '}
+                    insists on a <code>date</code> column and fails the job
+                    without it, and <code>analyze</code> needs <code>date</code>{' '}
+                    for its time section. <code>compute_kpis</code> does not
+                    reject a missing column, but it needs <code>sales</code> and{' '}
+                    <code>profit</code> to report anything: totals come back empty
+                    without them. <code>load_dataset</code> only describes the file,
+                    and <code>visualize</code> draws each chart only if that
+                    chart&apos;s columns are present.
+                  </p>
+                  <p>
+                    <span className="saas-info-opt">Optional</span>
+                    These add analysis rather than unlocking it:{' '}
+                    <code>units_sold</code>, <code>gross_sales</code>,{' '}
+                    <code>discount</code>, <code>cogs</code>,{' '}
+                    <code>sales_target</code>, <code>profit_target</code>, and the
+                    dimension columns <code>employee_id</code>,{' '}
+                    <code>employee_name</code>, <code>department</code>,{' '}
+                    <code>product</code>, <code>region</code>, <code>country</code>,{' '}
+                    <code>customer_id</code>, <code>customer_name</code>,{' '}
+                    <code>customer_segment</code>, <code>sales_channel</code>. Each
+                    section is produced only when its own columns are all
+                    present, and a section with missing columns is left out rather
+                    than guessed.
+                  </p>
+                </FormatInfoBox>
 
                 <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.6)' }}>
                   <div style={{ marginBottom: '8px' }}>Example paths shipped with the repository:</div>

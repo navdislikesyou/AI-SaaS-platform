@@ -191,6 +191,7 @@ app/
 │   ├── common.py        APIResponse, ErrorDetail, health, readiness
 │   ├── agent.py         agent info, execute request/response
 │   ├── knowledge.py     uploaded document models
+│   ├── automation.py    uploaded employee directory models
 │   └── performance.py   job request/response, job status enum
 ├── agents/
 │   ├── base.py          AgentAdapter ABC, concurrency limiting, placeholder base
@@ -201,6 +202,7 @@ app/
     ├── orchestrator.py  dispatch only
     ├── document_upload.py  validates uploads, writes them under generated names
     ├── document_manifest.py  JSON metadata for uploaded documents
+    ├── employee_directory.py  validates employee directories, resolves them
     └── job_manager.py   in-process background jobs for Performance
 ```
 
@@ -448,6 +450,139 @@ There is **no delete operation**. A document can be uploaded and listed, but
 nothing removes it from disk or from Chroma. Do not describe a document as
 deleted or removed unless that endpoint is implemented.
 
+### `POST /api/v1/automation/directories`
+
+Upload an employee directory and validate every record. `multipart/form-data`
+with a single `file` field. Accepts **JSON** and **CSV**.
+
+Returns **201 Created** only after every record passed validation, and includes a
+preview of the first 20 employees so the upload can be confirmed before use:
+
+```json
+{
+  "success": true,
+  "data": {
+    "directory": {
+      "directory_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41",
+      "filename": "engineering_roster.csv",
+      "format": "csv",
+      "employee_count": 42,
+      "size_bytes": 1843,
+      "status": "ready",
+      "uploaded_at": "2026-10-16T14:22:01+05:30"
+    },
+    "preview": [{ "name": "Aarti Rao", "email": "aarti.rao@example.com" }],
+    "message": "'engineering_roster.csv' accepted with 42 employee(s)."
+  },
+  "message": null,
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+**Formats.** JSON must be an array of objects. CSV needs a header row; column
+names are matched case-insensitively and a UTF-8 BOM is stripped, so a sheet
+exported from a spreadsheet is accepted as-is. Only `name` and `email` are read.
+**Any other column is discarded when the file is parsed**, so an uploaded roster
+cannot introduce a field that some later layer might echo back to a browser.
+
+XLSX is deliberately **not** supported. Reading it needs a dependency that is
+not part of an API-only install, and adding one would make the Automation
+adapter unavailable on deployments that never upload a spreadsheet.
+
+Validation happens in four layers, because each catches a different problem:
+
+| Check | Rejects with |
+|---|---|
+| Extension allowlist (`.json`, `.csv`), before any byte is read | 422 `VALIDATION_ERROR` |
+| Size limit, enforced while streaming, and NUL bytes in the content | 422 with `details.max_bytes` |
+| Structure: JSON array of objects, CSV header with both columns | 422 `VALIDATION_ERROR` |
+| Per record: `name` and `email` present and non-blank, plausible email, no duplicate name, no duplicate email | 422 with `details.row` and `details.field` |
+| Empty directory, or more than `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | 422 `VALIDATION_ERROR` |
+
+Duplicate names are rejected rather than resolved: attendee matching falls back
+to a first name, so two people sharing one name would silently resolve every
+mention to the first record found.
+
+Error `details` carry the row index and field name, never the offending value and
+never a filesystem path. The stored filename is generated server-side as
+`<uuid4>_<sanitized stem><ext>` and opened with `O_EXCL`, so a client cannot
+choose where a file lands, cannot traverse out of the upload directory, and
+cannot overwrite an earlier upload. A file that fails validation is removed
+before the error is returned.
+
+Status codes: 201 accepted, 422 rejected, 503/504 not applicable (no agent runs).
+
+### `GET /api/v1/automation/directories`
+
+List directories this instance has accepted, newest first. An empty manifest
+returns an empty list rather than an error.
+
+### `GET /api/v1/automation/directories/{directory_id}`
+
+Return the directory summary and its full employee records, with an
+`employees_truncated` flag. An unknown id and an id whose stored file is gone
+are reported identically as **404 `DIRECTORY_NOT_FOUND`**, so the response never
+confirms whether a given identifier ever existed. A stored file that no longer
+parses returns **422**; it is never quietly ignored.
+
+### Drafting against a selected directory
+
+`POST /api/v1/agents/execute` for the Automation Agent accepts one **optional**
+payload key alongside `instruction`:
+
+```json
+{
+  "agent": "automation",
+  "operation": "draft_action",
+  "payload": {
+    "instruction": "Schedule a sprint planning on 5 March with Aarti",
+    "directory_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41"
+  }
+}
+```
+
+Omit `directory_id` (or send `null` or a blank string) and the packaged
+`automation_agent/data/employees.json` is used exactly as before. The default
+directory is **never** replaced or overwritten by an upload.
+
+An unknown or unusable `directory_id` returns an error. It deliberately does
+**not** fall back to the default directory: a silent fall-back would produce a
+draft addressed to the wrong people while reporting success.
+
+The result gains a `directory` block naming the roster that was used, so a
+caller can tell which directory produced the recipients:
+
+```json
+"directory": { "directory_id": "9f2c1d0b…", "source": "uploaded", "employee_count": 42 }
+```
+
+`source` is `default` when no directory was selected. Recipients are reduced to
+`name` and `email` at the adapter boundary, so no other field from an uploaded
+roster can reach a client.
+
+**Parser limitations.** A directory changes *which employees* a request can
+resolve, nothing else. The parser still extracts a fixed set of fields — title,
+date, time, venue, attendees — by regex. There is **no department, role, or team
+parsing**, because the employee schema has never had those fields and the parser
+has no code path for them. Attendee matching is a case-insensitive substring
+match of the full name, then of the first name only; a bare surname resolves to
+nobody, which is deliberate.
+
+**Draft-only.** A directory changes recipients, never behaviour. The agent still
+drafts and never sends mail or schedules a meeting.
+
+### Employee directory storage is a local MVP
+
+Uploaded directories live in `AUTOMATION_UPLOAD_DIR` on the machine running the
+API, and metadata lives in a JSON manifest beside them. Both are gitignored. This
+inherits every limitation of the Knowledge upload storage described above:
+files are not shared between instances, storage is bounded only by disk, and the
+single-file manifest is unsafe for concurrent cross-process writes. A deployment
+needs persistent shared storage and a real metadata store.
+
+There is **no delete operation** for an employee directory, for the same reason
+there is none for a document.
+
 ### `POST /api/v1/performance/jobs`
 
 Submit a Performance Analyzer job. Returns **202 Accepted** immediately; the
@@ -585,6 +720,10 @@ environment. See `.env.example`. Notable keys:
 | `KNOWLEDGE_UPLOAD_DIR` | `uploads/knowledge` | Where uploaded documents are stored; local disk, see below |
 | `KNOWLEDGE_UPLOAD_MANIFEST_PATH` | `uploads/knowledge/documents.json` | Document metadata manifest |
 | `KNOWLEDGE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Upload size limit, enforced while streaming |
+| `AUTOMATION_UPLOAD_DIR` | `uploads/automation` | Where uploaded employee directories are stored; local disk, see below |
+| `AUTOMATION_UPLOAD_MANIFEST_PATH` | `uploads/automation/directories.json` | Employee directory metadata manifest |
+| `AUTOMATION_MAX_UPLOAD_BYTES` | `2097152` (2 MB) | Employee directory upload limit, enforced while streaming |
+| `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | `5000` | Largest accepted employee count in one directory |
 | `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |

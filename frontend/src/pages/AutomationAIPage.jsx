@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Zap,
   Play,
@@ -10,10 +10,19 @@ import {
   Compass,
   ShieldCheck,
   CheckCircle2,
+  Upload,
+  AlertCircle,
 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import { useAgentExecution } from '../hooks/useAgentExecution';
+import { useDirectoryUpload } from '../hooks/useDirectoryUpload';
+import { useEmployeeDirectories } from '../hooks/useEmployeeDirectories';
+import {
+  SUPPORTED_UPLOAD_LABEL,
+  UPLOAD_ACCEPT_ATTRIBUTE,
+} from '../services/automationService';
 import AgentExecutionResult from '../components/AgentExecutionResult';
+import FormatInfoBox, { FormatInfoSample } from '../components/FormatInfoBox';
 
 const SAMPLE_PROMPTS = [
   'Draft a sprint retro action plan for the engineering leads',
@@ -49,11 +58,80 @@ const ACTION_PIPELINE = [
   },
 ];
 
+/**
+ * Turn an API failure into a sentence a person can act on.
+ *
+ * The backend sends a specific `message` for every rejection it anticipates, and
+ * that message is more useful than anything generic, so it is preferred. The
+ * status branches only cover what the backend cannot describe, such as a network
+ * failure that never reached it.
+ *
+ * @param {object|null} error The upload error, if any.
+ * @param {object|null} draftError The draft error, used as a fallback hint.
+ * @returns {string} An empty string when there is nothing to report.
+ */
+function describeDirectoryError(error, draftError) {
+  if (!error) return '';
+
+  if (error.code === 'VALIDATION_ERROR' && error.message) return error.message;
+
+  if (error.code === 'DIRECTORY_NOT_FOUND' && error.message) {
+    return error.message;
+  }
+
+  if (error.status === 0) {
+    return 'Could not reach the backend. Check that the API is running and try again.';
+  }
+
+  if (error.status === 413) {
+    return 'That file is too large. Employee directories must stay small text files.';
+  }
+
+  if (draftError) return error.message || '';
+
+  return error.message || `Upload failed with status ${error.status}.`;
+}
+
+/**
+ * Render a byte count for the file picker hint.
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function AutomationAIPage() {
   const [activeTab, setActiveTab] = useState('studio');
   const [prompt, setPrompt] = useState('');
+  const [selectedDirectoryId, setSelectedDirectoryId] = useState('');
 
   const { execute, isLoading, response, error, executionMeta } = useAgentExecution();
+
+  const fileInputRef = useRef(null);
+  const {
+    selectedFile,
+    selectFile,
+    isUploading,
+    uploadedDirectory,
+    preview,
+    error: uploadError,
+    upload,
+  } = useDirectoryUpload();
+
+  const {
+    directories,
+    failedDirectories,
+    isLoading: directoriesLoading,
+    error: directoriesError,
+    addDirectory,
+  } = useEmployeeDirectories();
 
   const handleExecute = async (customPrompt = null) => {
     const text = customPrompt || prompt;
@@ -62,13 +140,39 @@ export default function AutomationAIPage() {
 
     // The adapter requires `instruction`, not `prompt`.
     // draft_action is the only implemented operation.
-    await execute('automation', 'draft_action', { instruction: text });
+    //
+    // `directory_id` is optional and omitted for the packaged default directory,
+    // which is what keeps existing behaviour unchanged when nothing is selected.
+    const payload = { instruction: text };
+    if (selectedDirectoryId) payload.directory_id = selectedDirectoryId;
+
+    await execute('automation', 'draft_action', payload);
   };
+
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+
+    // Reset the input so re-picking the identical file still fires onChange.
+    event.target.value = '';
+
+    selectFile(file);
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile || isUploading) return;
+
+    const directory = await upload();
+
+    // Only a directory the backend reports as ready joins the selector.
+    if (directory) addDirectory(directory);
+  };
+
+  const uploadErrorMessage = describeDirectoryError(uploadError, error);
 
   // Unwrap the execute envelope. useAgentExecution stores the full body:
   //   response           -> { success, data: A, message, request_id }
   //   response.data      -> A  = { agent, operation, data: B, duration_ms, ... }
-  //   response.data.data -> B  = { meeting, recipients, email }
+  //   response.data.data -> B  = { meeting, recipients, email, directory }
   // Guarded on the operation, and never defaulted, so absent data renders as
   // nothing rather than as invented meeting details.
   const automationOp = response?.data;
@@ -82,6 +186,7 @@ export default function AutomationAIPage() {
     ? draft.recipients
     : [];
   const emailBody = draft?.email || '';
+  const usedDirectory = draft?.directory || null;
 
   return (
     <div className="saas-workbench">
@@ -185,6 +290,40 @@ export default function AutomationAIPage() {
 
                   <div className="saas-card-body">
                     <div className="saas-input-group">
+                      <label className="saas-label" htmlFor="automation-directory-select">
+                        Employee Directory
+                      </label>
+                      <select
+                        id="automation-directory-select"
+                        className="saas-input"
+                        value={selectedDirectoryId}
+                        onChange={(e) => setSelectedDirectoryId(e.target.value)}
+                        disabled={isLoading || directoriesLoading}
+                      >
+                        <option value="">
+                          Default employee directory (packaged)
+                        </option>
+                        {directories.map((directory) => (
+                          <option key={directory.directory_id} value={directory.directory_id}>
+                            {directory.filename} — {directory.employee_count} employee
+                            {directory.employee_count === 1 ? '' : 's'}
+                          </option>
+                        ))}
+                      </select>
+                      <div
+                        style={{
+                          fontSize: '0.7rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '6px',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Names in your request are matched against the selected directory.
+                        Leave the default to use the employees that ship with the agent.
+                      </div>
+                    </div>
+
+                    <div className="saas-input-group">
                       <label className="saas-label">Describe your request in natural language</label>
                       <textarea
                         className="saas-textarea"
@@ -240,6 +379,33 @@ export default function AutomationAIPage() {
                   simulatedData={
                     draft ? (
                       <div style={{ marginTop: '12px' }}>
+                        {usedDirectory && (
+                          <div
+                            style={{
+                              fontSize: '0.7rem',
+                              color: 'rgba(255,255,255,0.5)',
+                              fontFamily: 'JetBrains Mono',
+                              textTransform: 'uppercase',
+                              marginBottom: '8px',
+                            }}
+                          >
+                            DIRECTORY USED:{' '}
+                            {usedDirectory.source === 'uploaded'
+                              ? directories.find(
+                                  (d) => d.directory_id === usedDirectory.directory_id
+                                )?.filename || usedDirectory.directory_id
+                              : 'Default employee directory'}
+                            {usedDirectory.employee_count !== null &&
+                              usedDirectory.employee_count !== undefined && (
+                                <span>
+                                  {' '}
+                                  ({usedDirectory.employee_count} employee
+                                  {usedDirectory.employee_count === 1 ? '' : 's'})
+                                </span>
+                              )}
+                          </div>
+                        )}
+
                         {meeting && (
                           <div
                             style={{
@@ -411,6 +577,328 @@ export default function AutomationAIPage() {
                     ) : null
                   }
                 />
+
+                {/* Employee Directory Upload */}
+                <div className="saas-card">
+                  <div className="saas-card-header">
+                    <div className="saas-card-title">
+                      <Upload size={16} color="#4A9DC4" />
+                      <span>Employee Directory</span>
+                    </div>
+
+                    <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}>
+                      {directories.length} uploaded director
+                      {directories.length === 1 ? 'y' : 'ies'}
+                    </span>
+                  </div>
+
+                  <div className="saas-card-body">
+                    <div className="saas-input-group">
+                      <label className="saas-label" htmlFor="automation-directory-input">
+                        Directory File
+                      </label>
+
+                      <input
+                        id="automation-directory-input"
+                        ref={fileInputRef}
+                        type="file"
+                        className="saas-input"
+                        accept={UPLOAD_ACCEPT_ATTRIBUTE}
+                        onChange={handleFileChange}
+                        disabled={isUploading}
+                      />
+
+                      <div
+                        style={{
+                          fontSize: '0.7rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '6px',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Accepted formats: <code>{SUPPORTED_UPLOAD_LABEL}</code>. Each
+                        employee needs a <code>name</code> and an <code>email</code>; any
+                        other column is discarded. The file is stored on the server under
+                        a generated name. {selectedFile ? (
+                          <>
+                            Selected: <strong>{selectedFile.name}</strong>{' '}
+                            ({formatBytes(selectedFile.size)})
+                          </>
+                        ) : (
+                          'No file selected yet.'
+                        )}
+                      </div>
+                    </div>
+
+                    <FormatInfoBox
+                      title="Employee directory format"
+                      accent="#4A9DC4"
+                      accentRgb="74, 157, 196"
+                      examples={[
+                        {
+                          label: 'CSV example',
+                          content: (
+                            <FormatInfoSample label="engineering.csv">
+                              {`name,email
+Aarti Rao,aarti@example.com
+Omkar Shenwai,omkar@example.com`}
+                            </FormatInfoSample>
+                          ),
+                        },
+                        {
+                          label: 'JSON example',
+                          content: (
+                            <FormatInfoSample label="engineering.json">
+                              {`[
+  { "name": "Aarti Rao", "email": "aarti@example.com" },
+  { "name": "Omkar Shenwai", "email": "omkar@example.com" }
+]`}
+                            </FormatInfoSample>
+                          ),
+                        },
+                      ]}
+                    >
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        A <code>.csv</code> or <code>.json</code> file. Exporting
+                        a spreadsheet is not enough &mdash; save it as CSV or JSON
+                        first.
+                      </p>
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        Every employee needs a <code>name</code> and an{' '}
+                        <code>email</code>. In CSV these are header names and are
+                        matched without regard to case, so <code>Name, Email</code>{' '}
+                        works. In JSON they are object keys and must be exactly{' '}
+                        <code>name</code> and <code>email</code>. Any other
+                        column or key is accepted but discarded.
+                      </p>
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        Each <code>name</code> and each <code>email</code> must be
+                        unique, compared without regard to case. One duplicate
+                        rejects the whole file, because a shared name would make
+                        every mention of it ambiguous.
+                      </p>
+                      <p>
+                        <span className="saas-info-req">Required</span>
+                        At least one employee, at most 5,000, and the file must
+                        stay under 2&nbsp;MB. Names are limited to 120 characters
+                        and addresses to 254.
+                      </p>
+                      <p>
+                        <span className="saas-info-opt">Note</span>
+                        When you write a request, names are matched by full name
+                        first and then by first name only. Matching ignores case,
+                        but a surname on its own resolves to nobody, and there is
+                        no matching by nickname, initials, or team. Write the full
+                        name or the first name.
+                      </p>
+                      <p className="saas-info-note">
+                        A directory only supplies names and addresses for a
+                        draft. Nothing is sent and nothing is scheduled &mdash;
+                        the draft is text on screen for you to review.
+                      </p>
+                    </FormatInfoBox>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        marginTop: '14px',
+                      }}
+                    >
+                      <button
+                        className="saas-btn"
+                        onClick={handleUpload}
+                        disabled={!selectedFile || isUploading}
+                        style={{
+                          background: '#4A9DC4',
+                          color: '#000',
+                          fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Upload size={14} />
+                        <span>{isUploading ? 'Uploading...' : 'Upload Directory'}</span>
+                      </button>
+                    </div>
+
+                    {isUploading && (
+                      <div
+                        role="status"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(74,157,196,0.08)',
+                          border: '1px solid rgba(74,157,196,0.25)',
+                          fontSize: '0.82rem',
+                          color: '#f4f4f5',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: '14px',
+                            height: '14px',
+                            borderRadius: '50%',
+                            border: '2px solid rgba(74,157,196,0.3)',
+                            borderTopColor: '#4A9DC4',
+                            animation: 'spin 0.8s linear infinite',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span>
+                          Validating and storing {selectedFile?.name}. Every record is
+                          checked before the directory becomes selectable.
+                        </span>
+                      </div>
+                    )}
+
+                    {uploadErrorMessage && !isUploading && (
+                      <div
+                        role="alert"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(239,68,68,0.08)',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                          fontSize: '0.82rem',
+                          color: '#fecaca',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        <AlertCircle
+                          size={16}
+                          color="#EF4444"
+                          style={{ flexShrink: 0 }}
+                        />
+                        <span>{uploadErrorMessage}</span>
+                      </div>
+                    )}
+
+                    {uploadedDirectory && !isUploading && (
+                      <div
+                        role="status"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginTop: '14px',
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(16,185,129,0.08)',
+                          border: '1px solid rgba(16,185,129,0.25)',
+                          fontSize: '0.82rem',
+                          color: '#a7f3d0',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        <CheckCircle2
+                          size={16}
+                          color="#10B981"
+                          style={{ flexShrink: 0 }}
+                        />
+                        <span>
+                          Accepted &ldquo;{uploadedDirectory.filename}&rdquo; with{' '}
+                          {uploadedDirectory.employee_count} employee
+                          {uploadedDirectory.employee_count === 1 ? '' : 's'}. Select it
+                          above to draft against it.
+                        </span>
+                      </div>
+                    )}
+
+                    {directoriesError && (
+                      <div
+                        role="alert"
+                        style={{
+                          marginTop: '14px',
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(245,158,11,0.08)',
+                          border: '1px solid rgba(245,158,11,0.25)',
+                          fontSize: '0.78rem',
+                          color: '#fcd34d',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Could not load the uploaded directory list:{' '}
+                        {directoriesError.message}. Uploads still work.
+                      </div>
+                    )}
+
+                    {preview.length > 0 && (
+                      <div style={{ marginTop: '16px' }}>
+                        <div
+                          style={{
+                            fontSize: '0.7rem',
+                            color: 'rgba(255,255,255,0.5)',
+                            fontFamily: 'JetBrains Mono',
+                            textTransform: 'uppercase',
+                            marginBottom: '8px',
+                          }}
+                        >
+                          PREVIEW ({preview.length} of {uploadedDirectory?.employee_count})
+                        </div>
+
+                        <table className="saas-table">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Email</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.map((employee) => (
+                              <tr key={employee.email}>
+                                <td>{employee.name}</td>
+                                <td
+                                  style={{
+                                    fontFamily: 'JetBrains Mono',
+                                    fontSize: '0.7rem',
+                                    color: '#4A9DC4',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {employee.email}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {failedDirectories.length > 0 && (
+                      <div
+                        role="alert"
+                        style={{
+                          marginTop: '14px',
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          background: 'rgba(239,68,68,0.08)',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                          fontSize: '0.78rem',
+                          color: '#fecaca',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {failedDirectories.length} uploaded director
+                        {failedDirectories.length === 1 ? 'y was' : 'ies were'} rejected
+                        and cannot be selected.
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* Right Column: Seam Specs */}

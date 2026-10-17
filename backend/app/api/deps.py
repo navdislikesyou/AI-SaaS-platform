@@ -12,6 +12,14 @@ from app.agents.registry import AgentRegistry
 from app.core.config import Settings, get_settings
 from app.services.document_manifest import DocumentManifest
 from app.services.document_upload import DocumentUploadService
+from app.services.employee_directory import (
+    EmployeeDirectoryManifest,
+    EmployeeDirectoryService,
+    get_directory_service,
+    get_manifest,
+    set_directory_service,
+    set_manifest,
+)
 from app.services.job_manager import JobManager
 from app.services.orchestrator import Orchestrator
 
@@ -131,6 +139,27 @@ def get_document_manifest() -> DocumentManifest:
     return _document_manifest
 
 
+def get_employee_directory_service() -> EmployeeDirectoryService:
+    """Return the process-wide employee directory service.
+
+    Created on first use so that an instance with no uploads never creates the
+    upload directory.
+
+    Returns:
+        The shared employee directory service.
+    """
+    return get_directory_service(get_settings())
+
+
+def get_employee_directory_manifest() -> EmployeeDirectoryManifest:
+    """Return the process-wide employee directory manifest.
+
+    Returns:
+        The shared employee directory manifest store.
+    """
+    return get_manifest(get_settings())
+
+
 def reset_state() -> None:
     """Clear the shared singletons. Intended for test isolation."""
     global _registry, _orchestrator, _job_manager, _upload_service, _document_manifest
@@ -139,3 +168,5 @@ def reset_state() -> None:
     _job_manager = None
     _upload_service = None
     _document_manifest = None
+    set_directory_service(None)
+    set_manifest(None)
