@@ -12,6 +12,12 @@ Each agent exposes a thin dict-in, dict-out service that the backend calls. The
 API reports each agent's status honestly, including when an agent is enabled but
 fails to initialize.
 
+The backend also implements JWT authentication with rotating HttpOnly refresh
+cookies, organisation-scoped multi-tenancy, role-based access control
+(`employee` / `manager` / `admin`), user management, database persistence
+(SQLAlchemy 2.x + Alembic), browser upload APIs for all three agents, and an
+activity-history feed.
+
 ## Agents
 
 | Agent | Purpose | Status | Capabilities | Served at |
@@ -46,8 +52,20 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
-cp .env.example .env            # optional; defaults work without it
+cp .env.example .env            # set JWT_SECRET_KEY; required in production
+alembic upgrade head            # create the schema (organizations, users, refresh_tokens)
+python bootstrap_admin.py --email admin@example.com --password 'YourStrongPass1!'
 ```
+
+`bootstrap_admin.py` is a one-time CLI that creates the first organisation and
+administrator. It takes the password as an argument and never stores it in
+plain text; only the Argon2 hash is written. Re-running it is safe: it refuses
+to create a second administrator for the same organisation.
+
+Auth and database dependencies live in `requirements.txt`, so a plain API
+install is enough to run every route in this document. The ML and
+document-processing packages the agents need are installed separately from
+`requirements-agents.txt` — see below.
 
 ### Agent prerequisites
 
@@ -117,9 +135,13 @@ pytest tests/conformance.py               # agent contract suite
 ```
 
 Tests use fake agents (`tests/fakes.py`) and a stub Performance service. No GPU,
-network, model download, or real dataset is required. Tests that genuinely need
-a live agent are opt-in and skip unless the corresponding `*_AGENT_ENABLED` flag
-is set; see `tests/test_agent_integration.py`.
+network, model download, or real dataset is required. Auth, user management,
+tenant isolation, and migrations each have their own suites
+(`test_auth_api.py`, `test_users_api.py`, `test_tenant_isolation.py`,
+`test_migrations.py`); the auth tests run against a temporary SQLite database,
+not a real service. Tests that genuinely need a live agent are opt-in and skip
+unless the corresponding `*_AGENT_ENABLED` flag is set; see
+`tests/test_agent_integration.py`.
 
 ## Lint and format
 
@@ -174,22 +196,31 @@ for Performance.
 ```
 app/
 ├── main.py              app factory, lifespan, CORS, middleware
+├── models.py            SQLAlchemy 2.x models: Organization, User, RefreshToken
+├── alembic/             database migrations (alembic upgrade head)
+├── bootstrap_admin.py   one-time CLI to create the first administrator
 ├── api/
-│   ├── deps.py          shared dependencies (auth seam lives here)
+│   ├── deps.py          shared dependencies: auth, roles, registry, sessions
 │   └── v1/
 │       ├── router.py    aggregates v1 routers
 │       ├── health.py    /health, /ready
+│       ├── auth.py      /auth/login, /auth/refresh, /auth/logout, /auth/me
+│       ├── users.py     /users (create, list, roles, activate, managers)
 │       ├── agents.py    /agents, /agents/{name}, /agents/execute
+│       ├── activity.py  /activity-history
 │       ├── knowledge.py /knowledge/documents (multipart upload + list)
-│       └── performance.py  /performance/jobs, /performance/jobs/{job_id}
+│       ├── automation.py /automation/directories (upload, list, detail)
+│       └── performance.py  /performance/datasets, /performance/jobs, artifacts
 ├── core/
 │   ├── config.py        pydantic-settings, no os.environ elsewhere
+│   ├── database.py      async engine, session factory, lifespan dispose
 │   ├── logging_config.py  console/JSON logging + request-id correlation
 │   ├── exceptions.py    AppError hierarchy + centralized handlers
 │   └── middleware.py    request id, timing log
 ├── schemas/
-│   ├── common.py        APIResponse, ErrorDetail, health, readiness
+│   ├── common.py        APIResponse, ErrorDetail, health, UserPublic
 │   ├── agent.py         agent info, execute request/response
+│   ├── activity.py      activity record models
 │   ├── knowledge.py     uploaded document models
 │   ├── automation.py    uploaded employee directory models
 │   └── performance.py   job request/response, job status enum
@@ -200,13 +231,55 @@ app/
 │   └── adapters/        knowledge, automation, performance
 └── services/
     ├── orchestrator.py  dispatch only
+    ├── activity_store.py  JSON-file activity history (local MVP)
     ├── document_upload.py  validates uploads, writes them under generated names
     ├── document_manifest.py  JSON metadata for uploaded documents
     ├── employee_directory.py  validates employee directories, resolves them
+    ├── dataset_upload.py  browser dataset uploads; resolves dataset_id to a path
     └── job_manager.py   in-process background jobs for Performance
 ```
 
 ## API
+
+### Authentication
+
+Every response carries an `X-Request-ID` header and a `request_id` body field.
+Most read and write routes accept an optional `Authorization: Bearer <access
+token>`; management routes require it. The token model is deliberately split:
+
+- **Access token** — short-lived JWT (default 15 minutes) returned in the
+  login/refresh response body. Carry it as `Authorization: Bearer …`. It
+  embeds the user id and a `token_version`, so bumping that version revokes
+  every outstanding token for the user.
+- **Refresh token** — 30-day credential stored in an `HttpOnly` cookie scoped
+  to `/api/v1/auth`. Never readable from JavaScript. Each refresh rotates it
+  atomically: only one concurrent request can consume a given token, and a
+  reused or revoked token is refused with 401.
+
+`POST /auth/refresh` and `POST /auth/logout` additionally require a trusted
+`Origin` header (see `TRUSTED_ORIGINS`), so a cross-site page cannot ride the
+cookie. In development the cookie is not `Secure`; in production it is.
+
+Role dependencies guard the management API: `require_employee` (any signed-in
+user), `require_manager` (manager or admin), `require_admin` (admin only). A
+token whose `token_version` no longer matches the user is rejected as
+revoked. Agent, upload, and activity routes use an *optional* principal: they
+scope data to the caller's organisation when a token is present, and either
+serve a restricted unauthenticated view or refuse, depending on the route —
+they never widen access because a token was omitted.
+
+Auth routes:
+
+| Route | Auth | Behaviour |
+|---|---|---|
+| `POST /api/v1/auth/login` | none | Query params `email`, `password` (not a JSON body). On success returns the user profile plus `access_token` and sets the refresh cookie. Wrong email and wrong password are indistinguishable (`401 INVALID_CREDENTIALS`) so login is not an account-enumeration oracle. |
+| `POST /api/v1/auth/refresh` | refresh cookie + trusted `Origin` | Rotates the refresh token and returns a new profile with a fresh `access_token`. Concurrent refreshes: one wins atomically, the loser gets 401 and must retry. |
+| `POST /api/v1/auth/logout` | refresh cookie + trusted `Origin` | Revokes the refresh token and clears the cookie. |
+| `GET /api/v1/auth/me` | Bearer access token | Returns the authenticated user's profile. |
+
+The first administrator is created out-of-band with `bootstrap_admin.py`;
+there is no public self-service registration. Admins create further users
+through `POST /api/v1/users/`.
 
 ### `GET /api/v1/health`
 
@@ -371,6 +444,43 @@ the API boundary:
   "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
 }
 ```
+
+### `POST /api/v1/users/`
+
+Create a user in the authenticated admin's organisation. Admin role required.
+Query params: `email`, `full_name`, optional `role` (default `employee`) and
+`manager_id`. The password is generated server-side; the response includes
+`temporary_password` exactly once so it can be delivered to the new user. Only
+the Argon2 hash is stored. A duplicate email is **409**; a `manager_id` outside
+the organisation is **409**.
+
+### `GET /api/v1/users/`
+
+List active users in the caller's organisation. Any authenticated user
+(employee or higher). Employees see colleagues; managers and admins see their
+team.
+
+### `PATCH /api/v1/users/{user_id}?new_role=…`
+
+Change a user's role. Admin only. The last active administrator in an
+organisation cannot be demoted — the guard counts the target as well, so an
+admin cannot demote themselves into a leaderless organisation. A role change
+bumps the target's `token_version`, revoking their outstanding tokens.
+
+### `POST /api/v1/users/{user_id}/activate` and `/deactivate`
+
+Re-enable or disable an account. Admin only, same organisation. Deactivation
+bumps `token_version`, so the user's existing access and refresh tokens stop
+working immediately.
+
+### `PATCH /api/v1/users/{user_id}/manager?manager_id=…`
+
+Assign or clear a user's manager. Manager or admin. The manager must belong to
+the same organisation. Omit `manager_id` (or send `null`) to remove it.
+
+All user routes are organisation-scoped: a user in another organisation is
+reported as **404** or refused with **409** depending on the route, never
+mutated, and never confirmed to exist.
 
 ### `POST /api/v1/knowledge/documents`
 
@@ -776,6 +886,17 @@ performance_agent/results/visualizations/jobs/<job_id>/visualizations/
 The API returns metadata only — `name`, `filename`, `size_bytes`. It never
 exposes an absolute filesystem path.
 
+### `GET /api/v1/performance/jobs/{job_id}/artifacts/{filename}`
+
+Stream one PNG a `visualize` job generated. The filename must be one the job
+itself reported in its `visualizations` result, and the resolved path must sit
+inside that job's visualization directory. Ownership is enforced: a chart
+belonging to a job in another organisation is not downloadable, and an
+unauthenticated caller owns nothing. Unknown job, foreign job, and unknown
+artifact are all **404 `JOB_NOT_FOUND`**, so the response never distinguishes
+"this chart does not exist" from "you may not see it". No
+`Content-Disposition` filename is set, so the server path is never echoed.
+
 ### Performance dataset storage is a local MVP
 
 Uploaded datasets are stored under `PERFORMANCE_UPLOAD_DIR`, separate from
@@ -807,14 +928,33 @@ Celery behind it. Two consequences:
 Treat the job API as single-process only until it is moved behind persistent
 storage.
 
+### `GET /api/v1/activity-history`
+
+Recent agent activity, newest first, capped at `MAX_RECORDS` (500). Each
+record is a lightweight metadata event — *that* an operation ran and how it
+ended — never the agent's output: no answers, no drafted bodies, no chart
+data, no filesystem paths. Query param `limit` (1–500, default 100).
+
+Records are written by the agent execution paths themselves, not through this
+router, so a client cannot fabricate history. When a token is present the
+result is scoped to that user's organisation. An unauthenticated caller
+receives an empty list, never the global record. The store is a JSON file on
+disk (a local MVP, process-local lock, atomic write) — same single-instance
+caveats as the upload manifests.
+
 ### Error codes
 
 | HTTP | Code | Meaning |
 |---|---|---|
+| 401 | `INVALID_CREDENTIALS` | Login failed; never distinguishes unknown email from wrong password |
+| 401 | `HTTP_401` | Missing, expired, or revoked access token (from the auth dependency) |
+| 403 | `FORBIDDEN` | Authenticated, but the role or scope is insufficient |
 | 404 | `AGENT_NOT_FOUND` | No agent registered under that name |
 | 404 | `OPERATION_NOT_FOUND` | Agent does not advertise that operation |
-| 404 | `JOB_NOT_FOUND` | No Performance job with that id |
+| 404 | `JOB_NOT_FOUND` | No Performance job with that id (also foreign/unknown artifact) |
+| 404 | `DIRECTORY_NOT_FOUND` | Unknown, deleted-file, or foreign employee directory |
 | 404 | `DATASET_NOT_FOUND` | Unknown, tampered, or no-longer-present dataset id |
+| 409 | `HTTP_409` | Conflict: duplicate email, cross-organisation manager, last-admin demotion |
 | 422 | `VALIDATION_ERROR` | Malformed body or failed schema validation |
 | 500 | `INTERNAL_ERROR` | Unexpected server fault (details never exposed) |
 | 502 | `AGENT_EXECUTION_FAILED` | Connected agent raised |
@@ -856,6 +996,11 @@ environment. See `.env.example`. Notable keys:
 | `AUTOMATION_AGENT_TIMEOUT_SECONDS` | `180` | Per-operation budget; exceeding it returns 504 |
 | `PERFORMANCE_AGENT_TIMEOUT_SECONDS` | `600` | Currently **not enforced** — see below |
 | `AGENT_MAX_CONCURRENCY` | `4` | Agent operations running at once, across all agents |
+| `DATABASE_URL` | `sqlite:///./app.db` | SQLAlchemy URL; `sqlite:///` and `postgresql://` both accepted (async drivers) |
+| `JWT_SECRET_KEY` | *(empty)* | HS256 signing key for access tokens; **required in production** — startup refuses without it |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access-token lifetime; enforced on every request |
+| `TRUSTED_ORIGINS` | localhost:3000, :5173 | Origins allowed to call `/auth/refresh` and `/auth/logout` (cookie CSRF check) |
+| `SAMESITE` | `lax` | Refresh-cookie `SameSite` scope; `none` requires HTTPS |
 
 Enabling an agent makes the API *attempt* construction, not guarantee it. A
 failure degrades that agent to unavailable rather than blocking startup, so
@@ -879,8 +1024,8 @@ job. The Knowledge and Automation timeouts above are enforced by the adapter
 base class and do return 504. Treat the Performance setting as reserved until a
 limit is added.
 
-Startup fails fast if `ENVIRONMENT=production` with `DEBUG=true` or a wildcard
-CORS origin.
+Startup fails fast if `ENVIRONMENT=production` with `DEBUG=true`, a wildcard
+CORS origin, or an empty `JWT_SECRET_KEY`.
 
 ## Logging
 
@@ -954,11 +1099,17 @@ rather than milliseconds should follow that pattern instead.
 
 ## Not implemented (future phases)
 
-Authentication, authorization, RBAC, and per-user data — `app/api/deps.py` is
-the seam; add a dependency there rather than editing each route. Also pending:
-database and persistence, a durable or shared file store for the three upload
-directories (see below), document and dataset deletion, streaming responses (SSE),
-rate limiting, and LLM-based agent routing.
+Authentication, RBAC, user management, and database persistence are
+implemented (see above). Still pending:
+
+- A durable or shared file store for the three upload directories and the
+  activity-history JSON file (all local MVPs today)
+- Document, directory, and dataset deletion endpoints
+- A persistent job store so Performance jobs survive restarts and work across
+  multiple workers (no Celery, Redis, or database-backed queue yet)
+- Streaming responses (SSE) for long agent operations
+- Rate limiting
+- LLM-based agent routing
 
 To add a synchronous agent: implement `AgentAdapter`, register it in
 `app/agents/factory.py`, and add a description in `app/api/v1/agents.py`. No
