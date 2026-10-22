@@ -214,7 +214,7 @@ async def test_ingest_document_returns_expected_dict_shape(
     service: FakeKnowledgeService,
 ) -> None:
     """A successful ingest returns exactly ``indexed`` and ``chunk_count``."""
-    result = await adapter.execute("ingest_document", {"file_path": "hr.pdf"}, 
+    result = await adapter.execute("ingest_document", {"file_path": "hr.pdf"},
         user_context=PRINCIPAL,
 )
 
@@ -228,7 +228,7 @@ async def test_ingest_document_forwards_the_file_path(
     service: FakeKnowledgeService,
 ) -> None:
     """The adapter passes the client's ``file_path`` through unchanged."""
-    await adapter.execute("ingest_document", {"file_path": "docs/policy.pdf"}, 
+    await adapter.execute("ingest_document", {"file_path": "docs/policy.pdf"},
         user_context=PRINCIPAL,
 )
 
@@ -240,7 +240,7 @@ async def test_ingest_document_reports_zero_chunks_as_not_indexed() -> None:
     service = FakeKnowledgeService(ingest_result={"indexed": False, "chunk_count": 0})
     adapter = KnowledgeAgentAdapter(service=service)
 
-    result = await adapter.execute("ingest_document", {"file_path": "empty.txt"}, 
+    result = await adapter.execute("ingest_document", {"file_path": "empty.txt"},
         user_context=PRINCIPAL,
 )
 
@@ -252,7 +252,7 @@ async def test_query_returns_expected_dict_shape(
     service: FakeKnowledgeService,
 ) -> None:
     """A successful query returns an ``answer`` string and a ``sources`` list."""
-    result = await adapter.execute("query", {"question": "What is the leave policy?"}, 
+    result = await adapter.execute("query", {"question": "What is the leave policy?"},
         user_context=PRINCIPAL,
 )
 

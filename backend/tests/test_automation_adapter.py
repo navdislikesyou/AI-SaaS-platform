@@ -228,7 +228,7 @@ async def test_draft_action_returns_expected_dict_shape(
     """A successful draft returns meeting, recipients, email, and directory keys."""
     result = await adapter.execute(
         "draft_action",
-        {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"}, 
+        {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"},
             user_context=PRINCIPAL,
     )
 
@@ -261,7 +261,7 @@ async def test_draft_action_returns_a_draft_rather_than_a_sent_receipt(
     A key like ``sent``, ``delivered``, or ``message_id`` would mean the agent
     had contacted a mail server. Drafting is the whole contract here.
     """
-    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"}, 
+    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"},
         user_context=PRINCIPAL,
 )
 
@@ -352,7 +352,7 @@ async def test_unavailable_agent_returns_503() -> None:
     adapter = AutomationAgentAdapter()
 
     with pytest.raises(AgentUnavailableError) as exc_info:
-        await adapter.execute("draft_action", {"instruction": "do something"}, 
+        await adapter.execute("draft_action", {"instruction": "do something"},
             user_context=PRINCIPAL,
     )
 
@@ -370,7 +370,7 @@ async def test_service_failure_becomes_agent_execution_error() -> None:
     adapter = AutomationAgentAdapter(service=service)
 
     with pytest.raises(AgentExecutionError) as exc_info:
-        await adapter.execute("draft_action", {"instruction": "draft an invite"}, 
+        await adapter.execute("draft_action", {"instruction": "draft an invite"},
             user_context=PRINCIPAL,
     )
 
@@ -401,7 +401,7 @@ async def test_every_advertised_capability_is_reachable(
 ) -> None:
     """Each advertised capability dispatches instead of raising 404."""
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, {"instruction": "draft an invite"}, 
+        result = await adapter.execute(operation, {"instruction": "draft an invite"},
             user_context=PRINCIPAL,
     )
         assert isinstance(result, dict)

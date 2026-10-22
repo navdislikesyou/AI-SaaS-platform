@@ -264,7 +264,7 @@ async def test_omitting_directory_id_uses_the_packaged_directory(
     adapter: AutomationAgentAdapter,
 ) -> None:
     """No directory_id means the service is called with no roster at all."""
-    await adapter.execute("draft_action", {"instruction": "Draft a standup invite"}, 
+    await adapter.execute("draft_action", {"instruction": "Draft a standup invite"},
         user_context=PRINCIPAL,
 )
 
@@ -286,7 +286,7 @@ async def test_a_blank_directory_id_uses_the_packaged_directory(
     """
     await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+        {"instruction": "Draft a standup invite", "directory_id": directory_id},
             user_context=PRINCIPAL,
     )
 
@@ -297,7 +297,7 @@ async def test_the_default_result_names_the_default_directory(
     adapter: AutomationAgentAdapter,
 ) -> None:
     """A caller can tell the packaged directory was used."""
-    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"}, 
+    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"},
         user_context=PRINCIPAL,
 )
 
@@ -323,7 +323,7 @@ async def test_a_selected_directory_replaces_the_roster(
 
     await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+        {"instruction": "Draft a standup invite", "directory_id": directory_id},
             user_context=PRINCIPAL,
     )
 
@@ -340,7 +340,7 @@ async def test_the_result_names_the_selected_directory(
 
     result = await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+        {"instruction": "Draft a standup invite", "directory_id": directory_id},
             user_context=PRINCIPAL,
     )
 
@@ -362,7 +362,7 @@ async def test_an_unknown_directory_id_is_an_error_not_a_fallback(
     with pytest.raises(DirectoryNotFoundError):
         await adapter.execute(
             "draft_action",
-            {"instruction": "Draft a standup invite", "directory_id": "nope"}, 
+            {"instruction": "Draft a standup invite", "directory_id": "nope"},
                 user_context=PRINCIPAL,
         )
 
@@ -383,7 +383,7 @@ async def test_a_directory_whose_file_vanished_is_an_error_not_a_fallback(
     with pytest.raises(DirectoryNotFoundError):
         await adapter.execute(
             "draft_action",
-            {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+            {"instruction": "Draft a standup invite", "directory_id": directory_id},
                 user_context=PRINCIPAL,
         )
 
