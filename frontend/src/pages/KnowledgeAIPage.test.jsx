@@ -16,6 +16,18 @@ import { AuthProvider } from '../context/AuthContext';
 import { ApiError } from '../services/api';
 import { knowledgeService } from '../services/knowledgeService';
 
+vi.mock('../services/authService', () => ({
+  authService: {
+    login: vi.fn(),
+    logout: vi.fn(),
+    fetchCurrentUser: vi.fn(),
+    // The session is restored on mount. There is none here, so the page
+    // renders for a signed-out visitor, exactly as an expired cookie would.
+    hydrateSession: vi.fn(() => Promise.resolve(null)),
+    toSessionUser: (profile) => profile,
+  },
+}));
+
 vi.mock('../services/knowledgeService', async (importOriginal) => {
   const actual = await importOriginal();
 

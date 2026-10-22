@@ -20,6 +20,18 @@ import { ApiError } from '../services/api';
 import { agentService } from '../services/agentService';
 import { automationService } from '../services/automationService';
 
+vi.mock('../services/authService', () => ({
+  authService: {
+    login: vi.fn(),
+    logout: vi.fn(),
+    fetchCurrentUser: vi.fn(),
+    // The session is restored on mount. There is none here, so the page
+    // renders for a signed-out visitor, exactly as an expired cookie would.
+    hydrateSession: vi.fn(() => Promise.resolve(null)),
+    toSessionUser: (profile) => profile,
+  },
+}));
+
 vi.mock('../services/automationService', async (importOriginal) => {
   const actual = await importOriginal();
 
@@ -335,8 +347,20 @@ describe('AutomationAIPage employee directory guidance', () => {
 });
 
 describe('AutomationAIPage directory selection', () => {
+  /**
+   * Wait for the directory picker to be populated, then choose one.
+   *
+   * The listing arrives asynchronously, so the select exists before its
+   * options do. Selecting from an empty select fails for reasons that have
+   * nothing to do with the behaviour under test.
+   *
+   * @param {object} user The user-event driver.
+   * @param {string} value The directory id to choose.
+   */
   async function selectDirectory(user, value) {
-    await user.selectOptions(await screen.findByLabelText('Employee Directory'), value);
+    const select = await screen.findByLabelText('Employee Directory');
+    await waitFor(() => expect(select.options.length).toBeGreaterThan(0));
+    await user.selectOptions(select, value);
   }
 
   it('omits directory_id from the payload when the default is selected', async () => {

@@ -699,6 +699,7 @@ def test_manifest_returns_newest_first(manifest: EmployeeDirectoryManifest) -> N
                 size_bytes=1,
                 status=DirectoryStatus.READY,
                 employee_count=1,
+                organization_id="org-1",
             )
         )
 

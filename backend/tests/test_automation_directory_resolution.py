@@ -27,6 +27,7 @@ from app.agents.adapters.automation import AutomationAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
 from app.api.deps import (
+    get_current_user_from_token_optional_principal,
     get_employee_directory_manifest,
     get_employee_directory_service,
     get_orchestrator,
@@ -46,6 +47,15 @@ from app.services.employee_directory import (
     set_manifest,
 )
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
+
+#: Principal handed to the adapter under test. The adapters authorize the
+#: caller before they reach the agent, so a principal is required.
+PRINCIPAL = {
+    "user_id": "test-user-1",
+    "organization_id": "test-org-1",
+    "role": "employee",
+}
 
 EXECUTE_URL = "/api/v1/agents/execute"
 
@@ -76,6 +86,7 @@ class RecordingService:
         self,
         instruction: str,
         employees: list[dict[str, str]] | None = None,
+        user_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record the call and return a draft shaped from the given roster.
 
@@ -141,6 +152,8 @@ def write_directory(
             size_bytes=len(json.dumps(records)),
             status=DirectoryStatus.READY,
             employee_count=len(records),
+            organization_id=PRINCIPAL["organization_id"],
+            owner_id=PRINCIPAL["user_id"],
         ),
         manifest,
     )
@@ -251,7 +264,9 @@ async def test_omitting_directory_id_uses_the_packaged_directory(
     adapter: AutomationAgentAdapter,
 ) -> None:
     """No directory_id means the service is called with no roster at all."""
-    await adapter.execute("draft_action", {"instruction": "Draft a standup invite"})
+    await adapter.execute("draft_action", {"instruction": "Draft a standup invite"}, 
+        user_context=PRINCIPAL,
+)
 
     service = adapter._service
 
@@ -271,7 +286,8 @@ async def test_a_blank_directory_id_uses_the_packaged_directory(
     """
     await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id},
+        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+            user_context=PRINCIPAL,
     )
 
     assert adapter._service.rosters == [None]
@@ -281,7 +297,9 @@ async def test_the_default_result_names_the_default_directory(
     adapter: AutomationAgentAdapter,
 ) -> None:
     """A caller can tell the packaged directory was used."""
-    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"})
+    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"}, 
+        user_context=PRINCIPAL,
+)
 
     assert result["directory"] == {
         "directory_id": None,
@@ -305,7 +323,8 @@ async def test_a_selected_directory_replaces_the_roster(
 
     await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id},
+        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+            user_context=PRINCIPAL,
     )
 
     assert adapter._service.rosters == [CUSTOM]
@@ -321,7 +340,8 @@ async def test_the_result_names_the_selected_directory(
 
     result = await adapter.execute(
         "draft_action",
-        {"instruction": "Draft a standup invite", "directory_id": directory_id},
+        {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+            user_context=PRINCIPAL,
     )
 
     assert result["directory"] == {
@@ -342,7 +362,8 @@ async def test_an_unknown_directory_id_is_an_error_not_a_fallback(
     with pytest.raises(DirectoryNotFoundError):
         await adapter.execute(
             "draft_action",
-            {"instruction": "Draft a standup invite", "directory_id": "nope"},
+            {"instruction": "Draft a standup invite", "directory_id": "nope"}, 
+                user_context=PRINCIPAL,
         )
 
     assert adapter._service.calls == []
@@ -362,7 +383,8 @@ async def test_a_directory_whose_file_vanished_is_an_error_not_a_fallback(
     with pytest.raises(DirectoryNotFoundError):
         await adapter.execute(
             "draft_action",
-            {"instruction": "Draft a standup invite", "directory_id": directory_id},
+            {"instruction": "Draft a standup invite", "directory_id": directory_id}, 
+                user_context=PRINCIPAL,
         )
 
     assert adapter._service.calls == []
@@ -384,6 +406,7 @@ async def test_recipients_with_extra_fields_are_whitelisted(
             self,
             instruction: str,
             employees: list[dict[str, str]] | None = None,
+        user_context: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             """Return recipients that still hold non-public fields.
 
@@ -429,6 +452,7 @@ async def test_malformed_recipient_records_are_skipped_not_passed_through(
             self,
             instruction: str,
             employees: list[dict[str, str]] | None = None,
+        user_context: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             """Return a recipients list containing junk.
 
@@ -486,6 +510,7 @@ async def http(
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
     application.dependency_overrides[get_employee_directory_manifest] = lambda: manifest
     application.dependency_overrides[get_employee_directory_service] = lambda: service
 
@@ -565,8 +590,7 @@ async def test_a_blank_instruction_is_still_rejected_before_any_lookup(
     with pytest.raises(ValidationFailedError):
         await adapter.execute(
             "draft_action",
-            {"instruction": "  ", "directory_id": directory_id},
-        )
+            {"instruction": "  ", "directory_id": directory_id}, user_context=PRINCIPAL)
 
 
 # --------------------------------------------------------------------------

@@ -64,6 +64,9 @@ class AutomationAgent:
         elif "standup" in text:
             title = "Daily Standup"
 
+        elif "orientation" in text or "onboarding" in text:
+            title = "Employee Orientation"
+
         # ------------------------
         # Date
         # ------------------------
@@ -110,23 +113,67 @@ class AutomationAgent:
 
         venue = "Not Specified"
 
+        # A clock time and a date can sit between the verb and the venue
+        # ("at 10:00 AM at Head Office, Conference Hall"), so both are blanked
+        # out before the venue is searched for. Otherwise the first "at" is
+        # read as the venue marker and the time comes back as the location.
+        cleaned = re.sub(
+            r"\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)",
+            " ",
+            instruction,
+        )
+        cleaned = re.sub(
+            r"\d{1,2}\s+(?!(?:AM|PM)\b)[A-Za-z]+(?:\s+\d{4})?",
+            " ",
+            cleaned,
+        )
+
         # An online venue is looked for before the physical-venue pattern. The
-        # pattern only matches after a literal " in ", which an online request
-        # rarely contains, so without this "the online meeting" would be lost.
+        # pattern only matches after a literal " in " or " at ", which an
+        # online request rarely contains, so without this "the online meeting"
+        # would be lost.
         online_venue = _online_venue(text)
 
         if online_venue:
             venue = online_venue
 
         else:
-            venue_match = re.search(
-                r"in\s+(.+?)(?:\s+and\s+invite|\s+with|$)",
-                instruction,
+            # "at Head Office", "in Conference Room A", "venue: Main Hall",
+            # and "location: ..." all introduce a physical venue. Candidates
+            # that turn out to be the following clause ("at 9 AM with Omkar"
+            # blanks to "at  with Omkar") are discarded, so a request with no
+            # venue leaves the field unspecified rather than naming the
+            # attendees as the location.
+            candidates = re.findall(
+                r"(?:\bat\b|\bin\b|\bvenue\b\s*:|\blocation\b\s*:)\s*(.+?)"
+                r"(?:\s+and\s+invite|\s+with\b|[.!?]|$)",
+                cleaned,
                 re.IGNORECASE,
             )
 
-            if venue_match:
-                venue = venue_match.group(1).strip()
+            for candidate in candidates:
+                candidate = re.sub(
+                    r"^(?:at|in|the)\s+",
+                    "",
+                    candidate.strip(),
+                    flags=re.IGNORECASE,
+                ).strip()
+                # A leftover sentence boundary or label prefix ("at" matched
+                # just before ". Venue: ...") is not part of the venue.
+                candidate = re.sub(r"^[.!?]\s*", "", candidate)
+                candidate = re.sub(
+                    r"^(?:venue|location)\s*:\s*",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                )
+                candidate = candidate.rstrip(".,;!?").strip()
+
+                if not candidate or candidate.lower().startswith(("with", "and")):
+                    continue
+
+                venue = candidate
+                break
 
         # ------------------------
         # Attendees
@@ -216,12 +263,30 @@ class AutomationAgent:
             person["name"] for person in recipients
         )
 
+        # A draft addressed to a resolved employee greets them by name. With
+        # no resolved recipient there is no name to use, so the generic Team
+        # greeting stands rather than inventing one.
+        greeting = f"Dear {recipients[0]['name']}," if recipients else "Dear Team,"
+
+        # The invitation text follows the parsed event type. An orientation
+        # is not a project meeting, and writing it as one loses the point of
+        # the request.
+        if "orientation" in meeting["title"].lower():
+            invitation_kind = "employee orientation invitation"
+            purpose = (
+                "The recipient is a new employee attending orientation. Cover "
+                "what to expect, when and where to report, and anything to bring."
+            )
+        else:
+            invitation_kind = "meeting invitation email"
+            purpose = ""
+
         prompt = f"""
 You are an enterprise HR assistant.
 
-Write a professional meeting invitation email.
+Write a professional {invitation_kind}.
 
-Meeting Title:
+Event Title:
 {meeting["title"]}
 
 Date:
@@ -235,6 +300,7 @@ Venue:
 
 Attendees:
 {attendee_names}
+{purpose}
 
 Instructions:
 
@@ -242,7 +308,7 @@ Instructions:
 - Do NOT generate a subject.
 - Do NOT use markdown.
 - Do NOT say "Here is your email."
-- Start directly with "Dear Team,".
+- Start directly with "{greeting}".
 - End with:
 
 Regards,

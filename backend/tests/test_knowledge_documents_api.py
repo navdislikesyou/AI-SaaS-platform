@@ -21,6 +21,7 @@ from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
 from app.api.deps import (
+    get_current_user_from_token_optional_principal,
     get_document_manifest,
     get_document_upload_service,
     get_orchestrator,
@@ -32,6 +33,7 @@ from app.main import create_app
 from app.services.document_manifest import DocumentManifest, DocumentStatus
 from app.services.document_upload import DocumentUploadService
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
 
 DOCUMENTS_URL = "/api/v1/knowledge/documents"
 
@@ -89,11 +91,16 @@ class FakeKnowledgeService:
         self.query_result = query_result or {"answer": "ok", "sources": []}
         self.received_paths: list[str] = []
 
-    def ingest(self, file_path: str) -> dict[str, Any]:
+    def ingest(
+        self,
+        file_path: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Record the path and report a canned indexing result.
 
         Args:
             file_path: Server path chosen by the upload service.
+            user_context: Principal context forwarded by the adapter.
 
         Returns:
             The configured ingest result.
@@ -108,11 +115,16 @@ class FakeKnowledgeService:
 
         return self.ingest_result
 
-    def query(self, question: str) -> dict[str, Any]:
+    def query(
+        self,
+        question: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return the configured query result.
 
         Args:
             question: The question, unused.
+            user_context: Principal context forwarded by the adapter.
 
         Returns:
             The configured query result.
@@ -204,6 +216,7 @@ def build_client(
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
     application.dependency_overrides[get_document_manifest] = lambda: manifest
     application.dependency_overrides[get_document_upload_service] = lambda: (
         DocumentUploadService(settings)
@@ -652,6 +665,7 @@ async def test_an_unavailable_agent_returns_503_and_removes_the_file(
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
     application.dependency_overrides[get_document_manifest] = lambda: manifest
     application.dependency_overrides[get_document_upload_service] = lambda: (
         DocumentUploadService(settings)

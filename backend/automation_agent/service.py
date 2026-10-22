@@ -59,6 +59,7 @@ class AutomationService:
         self,
         instruction: str,
         employees: list[dict[str, Any]] | None = None,
+        user_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Turn a natural language instruction into a meeting and a draft.
 
@@ -68,6 +69,12 @@ class AutomationService:
             employees: Employee records to resolve names against. Pass a
                 different list to draft against an uploaded directory. None uses
                 the packaged directory loaded at construction.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal. Scoping of the
+                roster happens in the adapter, which refuses a directory owned
+                by another organisation before the roster is read. The records
+                inside a directory do not carry an organisation of their own,
+                so they are not filtered here.
 
         Returns:
             A dictionary with ``meeting`` holding the parsed details,

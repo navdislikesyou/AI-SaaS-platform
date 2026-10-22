@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from app.agents.registry import AgentRegistry
 from app.api import deps
 from app.api.deps import (
+    get_current_user_from_token_optional_principal,
     get_employee_directory_manifest,
     get_employee_directory_service,
     get_orchestrator,
@@ -31,6 +32,7 @@ from app.services.employee_directory import (
     EmployeeDirectoryService,
 )
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
 
 DIRECTORIES_URL = "/api/v1/automation/directories"
 
@@ -98,6 +100,7 @@ async def http(
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
     application.dependency_overrides[get_employee_directory_manifest] = lambda: manifest
     application.dependency_overrides[get_employee_directory_service] = lambda: (
         EmployeeDirectoryService(settings)

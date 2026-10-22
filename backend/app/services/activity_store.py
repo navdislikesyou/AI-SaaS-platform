@@ -253,6 +253,8 @@ def record_activity(
     operation: str,
     description: str,
     status: str,
+    user_id: str | None = None,
+    organization_id: str | None = None,
     duration_ms: int | None = None,
 ) -> dict[str, Any]:
     """Record one completed agent operation.
@@ -270,6 +272,8 @@ def record_activity(
         operation: Operation name, e.g. ``query``.
         description: Short human-readable summary.
         status: ``completed`` or ``failed``.
+        user_id: The user who performed the operation.
+        organization_id: The organisation the operation was performed in.
         duration_ms: Optional elapsed time in milliseconds.
 
     Returns:
@@ -281,6 +285,8 @@ def record_activity(
         "operation": operation,
         "description": description,
         "status": status,
+        "user_id": user_id,
+        "organization_id": organization_id,
         "timestamp": datetime.now().astimezone().isoformat(),
     }
 
@@ -300,16 +306,32 @@ def record_activity(
         return record
 
 
-def list_activities(limit: int = 100) -> list[dict[str, Any]]:
+def list_activities(
+    limit: int = 100,
+    user_id: str | None = None,
+    organization_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Return stored records, newest first.
 
     Args:
         limit: Maximum number of records to return.
+        user_id: If provided, only return records for this user.
+        organization_id: If provided, only return records for this organisation.
 
     Returns:
-        Records ordered newest to oldest.
+        Records ordered newest to oldest, filtered by user and/or organisation
+        when specified.
     """
     records = get_store().read()
+
+    # Filter by user_id and/or organization_id when specified
+    if user_id is not None or organization_id is not None:
+        records = [
+            r
+            for r in records
+            if (user_id is None or r.get("user_id") == user_id)
+            and (organization_id is None or r.get("organization_id") == organization_id)
+        ]
 
     return list(reversed(records))[:limit]
 
@@ -320,6 +342,8 @@ def record_operation(
     status: str,
     duration_ms: int | None = None,
     description: str | None = None,
+    user_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """Record one agent operation using the canonical wording for it.
 
@@ -330,6 +354,8 @@ def record_operation(
         duration_ms: Optional elapsed time in milliseconds.
         description: Override for the canonical wording. Used only where a
             count is genuinely useful, e.g. "Generated 39 visualizations".
+        user_id: The user who performed the operation.
+        organization_id: The organisation the operation was performed in.
 
     Returns:
         The stored record.
@@ -339,5 +365,7 @@ def record_operation(
         operation=operation,
         description=description or describe_operation(agent, operation, status),
         status=status,
+        user_id=user_id,
+        organization_id=organization_id,
         duration_ms=duration_ms,
     )

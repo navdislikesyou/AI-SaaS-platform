@@ -118,7 +118,12 @@ class AgentAdapter(abc.ABC):
             True when the adapter can execute operations.
         """
 
-    async def execute(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def execute(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Execute one operation against the underlying agent.
 
         The default implementation enforces availability, checks that the
@@ -128,6 +133,8 @@ class AgentAdapter(abc.ABC):
         Args:
             operation: The operation name requested by the client.
             payload: Arbitrary JSON object supplied by the client.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             A JSON-serializable result object.
@@ -161,7 +168,7 @@ class AgentAdapter(abc.ABC):
 
         logger.info("agent_execute_start agent=%s operation=%s", self.name, operation)
         try:
-            result = await self._invoke(operation, payload)
+            result = await self._invoke(operation, payload, user_context)
         except TimeoutError:
             logger.warning("agent_execute_timeout agent=%s operation=%s", self.name, operation)
             raise AgentTimeoutError(
@@ -184,7 +191,12 @@ class AgentAdapter(abc.ABC):
         logger.info("agent_execute_ok agent=%s operation=%s", self.name, operation)
         return result
 
-    async def _invoke(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _invoke(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Run :meth:`run` in a worker thread with a timeout.
 
         The worker thread is deliberately *not* abandoned on timeout. Agent
@@ -198,6 +210,8 @@ class AgentAdapter(abc.ABC):
         Args:
             operation: The operation name.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             The agent result as a plain dict.
@@ -223,6 +237,7 @@ class AgentAdapter(abc.ABC):
                     self.run,
                     operation,
                     payload,
+                    user_context,
                     abandon_on_cancel=True,
                 )
         except BaseException:
@@ -250,7 +265,12 @@ class AgentAdapter(abc.ABC):
             )
         return raw
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Invoke the real agent synchronously.
 
         This is the integration seam. Once a real agent implementation exists,
@@ -260,6 +280,8 @@ class AgentAdapter(abc.ABC):
         Args:
             operation: The operation name.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             The agent result as a plain dict.
@@ -330,6 +352,7 @@ class _Slot:
         func: Any,
         operation: str,
         payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
     ) -> Any:
         """Call the agent function, then release the slot from this thread.
 
@@ -337,6 +360,8 @@ class _Slot:
             func: The bound adapter ``run`` method.
             operation: The operation name.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             Whatever ``func`` returns.
@@ -345,7 +370,7 @@ class _Slot:
             self._entered = True
 
         try:
-            return func(operation, payload)
+            return func(operation, payload, user_context=user_context)
         finally:
             self.release()
 

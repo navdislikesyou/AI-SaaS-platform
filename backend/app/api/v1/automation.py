@@ -12,6 +12,11 @@ records validated.
 The default directory that ships inside the agent package is not exposed here
 and is never replaced. Omitting ``directory_id`` from a draft request continues
 to use it exactly as before.
+
+Every uploaded directory is stamped with the authenticated user's
+``organization_id`` and ``owner_id``. Directory listing and detail lookups are
+scoped to the uploader's organisation.  Client-supplied organization filters
+are ignored in favor of the principal's scope.
 """
 
 from __future__ import annotations
@@ -22,13 +27,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from app.api.deps import (
+    get_current_user_from_token_optional_principal,
     get_employee_directory_manifest,
     get_employee_directory_service,
     get_settings_dep,
+    resource_is_visible_to,
 )
 from app.core.config import Settings
 from app.core.exceptions import DirectoryNotFoundError, ValidationFailedError
 from app.core.logging_config import get_request_id
+from app.models import User
 from app.schemas.automation import (
     DirectoryDetailResponse,
     DirectoryListResponse,
@@ -72,6 +80,9 @@ _LIST_LIMIT = 500
         "`name` and `email` is discarded. Returns 201 only when every record "
         "passed validation; otherwise the stored file is removed and nothing is "
         "recorded as usable."
+        " Every uploaded directory is stamped with the authenticated user's "
+        "organization_id and owner_id. Directory listing and detail lookups are "
+        "scoped to the uploader's organisation."
     ),
     responses={
         201: {"description": "Employee directory uploaded and validated"},
@@ -82,6 +93,8 @@ async def upload_directory(
     file: UploadFile = File(..., description="JSON or CSV employee directory."),
     service: EmployeeDirectoryService = Depends(get_employee_directory_service),
     manifest: EmployeeDirectoryManifest = Depends(get_employee_directory_manifest),
+    settings: Settings = Depends(get_settings_dep),
+    current_user: User | None = Depends(get_current_user_from_token_optional_principal),
 ) -> APIResponse[DirectoryUploadResponse]:
     """Upload one employee directory and validate its records.
 
@@ -89,10 +102,17 @@ async def upload_directory(
     if any record fails validation, so a rejected upload leaves neither an
     orphaned file nor a usable-looking entry in the list.
 
+    Every uploaded directory is stamped with the authenticated user's
+    ``organization_id`` and ``owner_id`` when authentication is active.
+    Directory listing and detail lookups are scoped to the uploader's
+    organisation.
+
     Args:
         file: The multipart file field sent by the client.
         service: Validates and stores the upload.
         manifest: Employee directory metadata store.
+        settings: Application settings.
+        current_user: The authenticated user, or None if no token is provided.
 
     Returns:
         An envelope containing the stored directory and a preview of its records.
@@ -101,11 +121,15 @@ async def upload_directory(
         ValidationFailedError: If the file or any record is not acceptable
             (422).
     """
+    # Determine ownership metadata; default to None when unauthenticated
+    # so existing records without ownership remain visible (backward compat).
+    org_id = current_user.organization_id if current_user else None
+    owner_id = current_user.id if current_user else None
+
     try:
         stored = await service.store(file)
     except ValidationFailedError as exc:
         logger.warning("automation_directory_upload_rejected reason=%s", exc.message)
-
         raise
 
     records = list(stored.records)
@@ -119,6 +143,8 @@ async def upload_directory(
             size_bytes=stored.size_bytes,
             status=DirectoryStatus.READY,
             employee_count=len(records),
+            organization_id=org_id,
+            owner_id=owner_id,
         ),
         manifest,
     )
@@ -142,24 +168,41 @@ async def upload_directory(
     description=(
         "Returns the employee directories this instance has accepted, newest "
         "first, with their validation status. The list reflects local uploads "
-        "only; a different instance would not see them."
+        "only; a different instance would not see them. Records are scoped to "
+        "the authenticated user's organisation; client-supplied organization "
+        "filters are ignored. A request with no organisation has no scope and "
+        "is shown no directories."
     ),
 )
 async def get_directories(
     manifest: EmployeeDirectoryManifest = Depends(get_employee_directory_manifest),
     settings: Settings = Depends(get_settings_dep),
+    current_user: User | None = Depends(get_current_user_from_token_optional_principal),
 ) -> APIResponse[DirectoryListResponse]:
     """List uploaded employee directories.
+
+    Records are scoped to the authenticated user's organisation. An empty
+    manifest returns an empty list rather than an error. A request with no
+    organisation has no scope, so it sees nothing: returning the whole history
+    to an anonymous caller would hand every tenant's roster names to anyone.
 
     Args:
         manifest: Employee directory metadata store.
         settings: Application settings.
+        current_user: The authenticated user, or None if no token is provided.
 
     Returns:
         An envelope containing the directories, newest first. An empty manifest
         returns an empty list rather than an error.
     """
     rows = list_directories(manifest, limit=_LIST_LIMIT)
+
+    organization_id = current_user.organization_id if current_user else None
+
+    if organization_id is None:
+        rows = []
+    else:
+        rows = [row for row in rows if row.get("organization_id") == organization_id]
 
     directories = [_to_directory(row) for row in rows]
 
@@ -179,7 +222,9 @@ async def get_directories(
     description=(
         "Returns the employee records of one uploaded directory. An unknown id "
         "and an id whose stored file is gone are reported the same way, so the "
-        "response never confirms whether a given identifier ever existed."
+        "response never confirms whether a given identifier ever existed. "
+        "Ownership is enforced: a directory uploaded by another organisation's "
+        "user is not accessible."
     ),
     responses={
         404: {"description": "Unknown directory, or its stored file is gone"},
@@ -190,25 +235,42 @@ async def get_directory(
     directory_id: str,
     service: EmployeeDirectoryService = Depends(get_employee_directory_service),
     manifest: EmployeeDirectoryManifest = Depends(get_employee_directory_manifest),
+    current_user: User | None = Depends(get_current_user_from_token_optional_principal),
 ) -> APIResponse[DirectoryDetailResponse]:
     """Return one uploaded directory and its employee records.
+
+    Ownership is enforced: a directory uploaded by another user or organization
+    is not accessible. The directory_id is resolved against the manifest, and
+    the row's organization_id is compared against the authenticated user's
+    organization_id.
 
     Args:
         directory_id: The identifier returned by the upload route.
         service: Reads and validates the stored file.
         manifest: Employee directory metadata store.
+        current_user: The authenticated user, or None if no token is provided.
 
     Returns:
         An envelope containing the directory and its records.
 
     Raises:
         DirectoryNotFoundError: If the id is unknown or its file is gone (404).
-        ValidationFailedError: If the stored file no longer holds valid records
-            (422).
+        ValidationFailedError: If the directory belongs to another organisation
+            (403).
     """
     row = find_directory_row(directory_id, manifest)
 
     if row is None:
+        raise DirectoryNotFoundError(
+            f"Employee directory '{directory_id}' was not found.",
+            details={"directory_id": directory_id},
+        )
+
+    # Enforce organization ownership: a directory uploaded by another
+    # organisation's user is not accessible. A caller with no authenticated
+    # organisation owns nothing, so it cannot read a directory that belongs to
+    # a tenant either.
+    if not resource_is_visible_to(row.get("organization_id"), current_user):
         raise DirectoryNotFoundError(
             f"Employee directory '{directory_id}' was not found.",
             details={"directory_id": directory_id},

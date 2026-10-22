@@ -57,11 +57,19 @@ class KnowledgeService:
             settings.resolved_knowledge_chroma_path,
         )
 
-    def ingest(self, file_path: str) -> dict[str, Any]:
+    def ingest(
+        self,
+        file_path: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Index a document into the knowledge base.
 
         Args:
             file_path: Path to a PDF, DOCX, or TXT file.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal. The
+                organization is written onto every indexed chunk so the
+                retrieval path can scope queries to it.
 
         Returns:
             A dictionary with ``indexed`` reporting whether any chunk was
@@ -70,7 +78,7 @@ class KnowledgeService:
         Raises:
             ValueError: If the file extension is not supported by the loader.
         """
-        chunk_count = int(self._agent.ingest(file_path) or 0)
+        chunk_count = int(self._agent.ingest(file_path, user_context=user_context) or 0)
 
         logger.info(
             "knowledge_ingest indexed_chunks=%d source=%s",
@@ -83,18 +91,26 @@ class KnowledgeService:
             "chunk_count": chunk_count,
         }
 
-    def query(self, question: str) -> dict[str, Any]:
+    def query(
+        self,
+        question: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Answer a question from the indexed documents.
 
         Args:
             question: The natural language question to answer.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal. The
+                organization scopes retrieval, so another organization's
+                documents cannot reach the prompt or the citations.
 
         Returns:
             A dictionary with ``answer`` holding the generated text and
             ``sources`` holding the deduplicated ``{"source", "page"}``
             citations the answer was drawn from.
         """
-        answer, sources = self._agent.ask(question)
+        answer, sources = self._agent.ask(question, user_context=user_context)
 
         logger.info("knowledge_query source_count=%d", len(sources))
 

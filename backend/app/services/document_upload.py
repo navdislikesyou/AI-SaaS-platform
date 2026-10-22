@@ -525,12 +525,16 @@ def _remove(path: Path) -> bool:
 _default_service: DocumentUploadService | None = None
 
 
-def get_upload_service() -> DocumentUploadService:
+def get_upload_service(settings: Settings | None = None) -> DocumentUploadService:
     """Return the process-wide upload service.
 
     Created on first use rather than during startup so that a read-only
     deployment still boots, and so the directory is created only when something
     is actually uploaded.
+
+    Args:
+        settings: Settings to build the service from. Defaults to the
+            process-wide settings.
 
     Returns:
         The shared upload service.
@@ -538,7 +542,7 @@ def get_upload_service() -> DocumentUploadService:
     global _default_service
 
     if _default_service is None:
-        _default_service = DocumentUploadService()
+        _default_service = DocumentUploadService(settings)
 
     return _default_service
 

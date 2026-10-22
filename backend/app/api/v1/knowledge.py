@@ -12,6 +12,12 @@ because the call goes through the orchestrator.
 
 Nothing here returns a filesystem path. A client learns the display filename it
 sent, a server-generated identifier, and whether indexing succeeded.
+
+Additionally, every uploaded document is stamped with the authenticated user's
+``organization_id`` and ``owner_id``. Document listing and detail lookups are
+scoped to the uploader's organisation.  Client-supplied organization filters are
+ignored in favor of the principal's scope.  A request with no organisation has
+no scope: it cannot upload a document, and it sees none.
 """
 
 from __future__ import annotations
@@ -23,14 +29,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from app.api.deps import (
+    get_current_user_from_token_optional_principal,
     get_document_manifest,
     get_document_upload_service,
     get_orchestrator,
     get_settings_dep,
+    user_context_for,
 )
 from app.core.config import Settings
 from app.core.exceptions import AppError, ValidationFailedError
 from app.core.logging_config import get_request_id
+from app.models import User
 from app.schemas.common import APIResponse
 from app.schemas.knowledge import DocumentListResponse, DocumentUploadResponse, UploadedDocument
 from app.services.document_manifest import (
@@ -67,6 +76,13 @@ _LIST_LIMIT = 500
         "The extension, the size, and the file content are all validated. "
         "Returns 201 only after indexing succeeded; if ingestion fails the "
         "stored file is removed and no document is recorded as indexed."
+        " Every uploaded document is stamped with the authenticated user's "
+        "organization_id and owner_id. Document "
+        "listing and detail lookups are scoped to the uploader's organisation. "
+        "An upload requires an authenticated organisation: indexing a document "
+        "without one would write chunks that no organisation owns and can "
+        "therefore read, so the request is refused with 403 before the file "
+        "is indexed."
     ),
     responses={
         201: {"description": "Document uploaded and indexed"},
@@ -82,6 +98,7 @@ async def upload_document(
     manifest: DocumentManifest = Depends(get_document_manifest),
     orchestrator: Orchestrator = Depends(get_orchestrator),
     settings: Settings = Depends(get_settings_dep),
+    current_user: User | None = Depends(get_current_user_from_token_optional_principal),
 ) -> APIResponse[DocumentUploadResponse]:
     """Upload one document and index it.
 
@@ -91,12 +108,22 @@ async def upload_document(
     status rather than dropped, which keeps the document list honest about what
     was attempted.
 
+    Every uploaded document is stamped with the authenticated user's
+    ``organization_id`` and ``owner_id`` when authentication is active.
+    Document listing and detail lookups are scoped to the uploader's
+    organisation.
+
+    An upload requires an authenticated organisation. Indexing a document
+    without one would write chunks that no organisation owns and can therefore
+    read, so the request is refused with 403 before the file is indexed.
+
     Args:
         file: The multipart file field sent by the client.
         upload_service: Validates and stores the upload.
         manifest: Document metadata store.
         orchestrator: Dispatches the ingestion operation.
         settings: Application settings.
+        current_user: The authenticated user, or None if no token is provided.
 
     Returns:
         An envelope containing the stored document and its indexing outcome.
@@ -114,6 +141,11 @@ async def upload_document(
     # once the request ends, so the sweep runs on a later upload.
     upload_service.sweep_failed(_failed_stored_names(manifest))
 
+    # Determine ownership metadata; default to None when unauthenticated
+    # so existing records without ownership remain visible (backward compat).
+    org_id = current_user.organization_id if current_user else None
+    owner_id = current_user.id if current_user else None
+
     stored = await upload_service.store(file)
 
     try:
@@ -121,6 +153,7 @@ async def upload_document(
             _INGEST_AGENT,
             _INGEST_OPERATION,
             {"file_path": str(stored.path)},
+            user_context=user_context_for(current_user),
         )
 
     except AppError as exc:
@@ -134,6 +167,8 @@ async def upload_document(
                 size_bytes=stored.size_bytes,
                 status=DocumentStatus.FAILED,
                 error=exc.message,
+                organization_id=org_id,
+                owner_id=owner_id,
             ),
             manifest,
         )
@@ -159,6 +194,8 @@ async def upload_document(
                 size_bytes=stored.size_bytes,
                 status=DocumentStatus.FAILED,
                 error="The document produced no indexable text.",
+                organization_id=org_id,
+                owner_id=owner_id,
             ),
             manifest,
         )
@@ -177,6 +214,8 @@ async def upload_document(
             size_bytes=stored.size_bytes,
             status=DocumentStatus.INDEXED,
             chunk_count=chunk_count,
+            organization_id=org_id,
+            owner_id=owner_id,
         ),
         manifest,
     )
@@ -214,24 +253,41 @@ async def upload_document(
         "Returns the documents this instance has ingested, newest first, with "
         "their indexing status. The corpus reflects local uploads only; a "
         "process restart keeps the manifest because it is a file on disk, but a "
-        "different instance would not see it."
+        "different instance would not see it. Records are scoped to the "
+        "authenticated user's organisation; client-supplied organization filters "
+        "are ignored. A request with no organisation has no scope and is "
+        "shown no documents."
     ),
 )
 async def get_documents(
     manifest: DocumentManifest = Depends(get_document_manifest),
     settings: Settings = Depends(get_settings_dep),
+    current_user: User | None = Depends(get_current_user_from_token_optional_principal),
 ) -> APIResponse[DocumentListResponse]:
     """List uploaded documents.
+
+    Records are scoped to the authenticated user's organisation. An empty
+    manifest returns an empty list rather than an error. A request with no
+    organisation has no scope, so it sees nothing: returning the whole history
+    to an anonymous caller would hand every tenant's filenames to anyone.
 
     Args:
         manifest: Document metadata store.
         settings: Application settings.
+        current_user: The authenticated user, or None if no token is provided.
 
     Returns:
         An envelope containing the documents, newest first. An empty manifest
         returns an empty list rather than an error.
     """
     rows = list_documents(manifest, limit=_LIST_LIMIT)
+
+    organization_id = current_user.organization_id if current_user else None
+
+    if organization_id is None:
+        rows = []
+    else:
+        rows = [row for row in rows if row.get("organization_id") == organization_id]
 
     documents = [_to_document(row) for row in rows]
 
@@ -253,7 +309,12 @@ def _failed_stored_names(manifest: DocumentManifest) -> list[str]:
     Returns:
         Stored filenames for rows whose status is ``failed``.
     """
-    rows = list_documents(manifest, status=DocumentStatus.FAILED, limit=_LIST_LIMIT)
+    rows = list_documents(
+        manifest,
+        status=DocumentStatus.FAILED,
+        limit=_LIST_LIMIT,
+        include_unowned=True,
+    )
 
     return [str(row["stored_name"]) for row in rows if row.get("stored_name")]
 

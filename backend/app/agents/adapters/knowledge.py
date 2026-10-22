@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import AgentAdapter
-from app.core.exceptions import AgentUnavailableError, ValidationFailedError
+from app.core.exceptions import (
+    AgentUnavailableError,
+    ForbiddenError,
+    ValidationFailedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,12 +170,25 @@ class KnowledgeAgentAdapter(AgentAdapter):
             "dependencies are installed and that configuration is correct."
         )
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Validate the payload, then call the service.
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the payload, authorize the caller, then call the service.
+
+        Every operation here reads or writes documents that belong to one
+        organisation, so the caller must present an organisation. Without one
+        the retrieval path cannot be scoped and the answer would be drawn
+        from every tenant's documents at once, so the operation is refused
+        rather than answered from unscoped data.
 
         Args:
             operation: One of :data:`ADVERTISED_CAPABILITIES`.
             payload: Operation-specific input.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             The service result as a plain dict.
@@ -180,15 +197,19 @@ class KnowledgeAgentAdapter(AgentAdapter):
             ValidationFailedError: If a required key is missing or blank.
                 Raising the domain error here is what makes a bad request a 422
                 instead of a 502.
+            ForbiddenError: If the caller has no organisation, so the
+                documents it would read cannot be scoped (403).
             AgentUnavailableError: If no service is connected.
         """
         service = self._require_service()
         cleaned = validate_payload(operation, payload)
 
-        if operation == "ingest_document":
-            return service.ingest(cleaned["file_path"])
+        _require_organization(operation, user_context)
 
-        result = service.query(cleaned["question"])
+        if operation == "ingest_document":
+            return service.ingest(cleaned["file_path"], user_context=user_context)
+
+        result = service.query(cleaned["question"], user_context=user_context)
 
         return _with_public_sources(result)
 
@@ -252,6 +273,42 @@ def _with_public_sources(result: Any) -> dict[str, Any]:
             entry["source"] = Path(source).name
 
     return {**result, "sources": sanitized}
+
+
+def _require_organization(
+    operation: str,
+    user_context: dict[str, Any] | None,
+) -> None:
+    """Refuse an operation that cannot be scoped to one organisation.
+
+    The knowledge base is shared: every tenant's documents sit in one vector
+    store. A query without an organisation would retrieve from all of them, and
+    an ingest without one would write a document no organisation owns and can
+    therefore read. Both are refused instead of being answered from unscoped
+    data.
+
+    Args:
+        operation: The requested operation.
+        user_context: The principal's context, or None for an anonymous caller.
+
+    Raises:
+        ForbiddenError: If the caller presents no organisation (403).
+    """
+    organization_id = None
+    if user_context:
+        organization_id = user_context.get("organization_id")
+
+    if organization_id is not None:
+        return
+
+    raise ForbiddenError(
+        "Knowledge operations require an authenticated organisation.",
+        details={
+            "agent": KnowledgeAgentAdapter.AGENT_NAME,
+            "operation": operation,
+            "reason": "missing_organization",
+        },
+    )
 
 
 def validate_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:

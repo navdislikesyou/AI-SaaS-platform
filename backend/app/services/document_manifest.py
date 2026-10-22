@@ -51,6 +51,19 @@ class DocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class DocumentOwnership:
+    """Ownership metadata for uploaded documents.
+
+    Attributes:
+        organization_id: The organisation that owns the document.
+        owner_id: The user who uploaded the document.
+    """
+
+    def __init__(self, organization_id: str | None = None, owner_id: str | None = None) -> None:
+        self.organization_id = organization_id
+        self.owner_id = owner_id
+
+
 class DocumentManifest:
     """JSON-file backed store of uploaded document metadata.
 
@@ -158,6 +171,8 @@ def build_row(
     status: DocumentStatus,
     chunk_count: int | None = None,
     error: str | None = None,
+    organization_id: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     """Build one manifest row.
 
@@ -170,6 +185,8 @@ def build_row(
         status: Indexing outcome.
         chunk_count: Chunks committed, when indexing succeeded.
         error: Sanitized failure reason, when it did not.
+        organization_id: The organisation that owns the document.
+        owner_id: The user who uploaded the document.
 
     Returns:
         A JSON-serializable manifest row.
@@ -183,6 +200,11 @@ def build_row(
         "status": status.value,
         "uploaded_at": datetime.now().astimezone().isoformat(),
     }
+
+    if organization_id is not None:
+        row["organization_id"] = organization_id
+    if owner_id is not None:
+        row["owner_id"] = owner_id
 
     if chunk_count is not None:
         row["chunk_count"] = chunk_count
@@ -260,18 +282,33 @@ def list_documents(
     manifest: DocumentManifest | None = None,
     status: DocumentStatus | None = None,
     limit: int = MAX_RECORDS,
+    include_unowned: bool = False,
 ) -> list[dict[str, Any]]:
     """Return manifest rows, newest first.
+
+   Rows whose ``organization_id`` is ``None`` are excluded from the default
+    listing to prevent legacy data without ownership from being globally
+    readable.  Administrators can reassign or remove such records through
+    the manifest store\'s direct JSON manipulation.
 
     Args:
         manifest: Manifest to read from. Defaults to the process-wide store.
         status: Optional filter for one indexing outcome.
         limit: Maximum number of rows to return.
+        include_unowned: Whether to include rows with no recorded owner.
+            Used by the cleanup sweep, which has to reach failed uploads that
+            never acquired an owner because the upload was refused.
 
     Returns:
-        Rows ordered newest to oldest.
+        Rows ordered newest to oldest, excluding records with
+        ``organization_id`` ``None`` unless ``include_unowned`` is set.
     """
     rows = (manifest or get_manifest()).read()
+
+    if not include_unowned:
+        # Exclude records without organization_id to prevent legacy data without
+        # ownership from being globally readable.
+        rows = [row for row in rows if row.get("organization_id") is not None]
 
     if status is not None:
         rows = [row for row in rows if row.get("status") == status.value]

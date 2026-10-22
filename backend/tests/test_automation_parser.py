@@ -539,3 +539,168 @@ def test_recipients_are_not_duplicated(agent: AutomationAgent) -> None:
     recipients = agent.find_emails(meeting["attendees"])
 
     assert len(recipients) == len({person["name"] for person in recipients}) == 2
+
+
+# --------------------------------------------------------------------------
+# Venue extraction: a time before the location is not the location
+# --------------------------------------------------------------------------
+
+
+def test_a_venue_after_a_time_is_not_swallowed_by_the_time(
+    agent: AutomationAgent,
+) -> None:
+    """ "at 10:00 AM at Head Office, Conference Hall" yields the venue.
+
+    Regression test: the venue pattern began at the first " at ", so the
+    clock time came back as the location and the field read
+    ``"Not Specified"`` once the time-shaped capture was rejected downstream.
+    The time is blanked out before the venue is searched for, leaving the
+    real location to match.
+    """
+    meeting = agent.parse_instruction(
+        "Schedule an employee orientation on 15 May 2025 at 10:00 AM "
+        "at Head Office, Conference Hall and invite Omkar"
+    )
+
+    assert meeting["venue"] == "Head Office, Conference Hall"
+
+
+def test_an_explicit_venue_label_is_read(agent: AutomationAgent) -> None:
+    """ "Venue: ..." introduces the location the same way "at" does."""
+    meeting = agent.parse_instruction(
+        "Schedule a project review for 5 March at 10 AM. "
+        "Venue: Head Office, Conference Hall"
+    )
+
+    assert meeting["venue"] == "Head Office, Conference Hall"
+
+
+def test_an_explicit_location_label_is_read(agent: AutomationAgent) -> None:
+    """ "Location: ..." is the same label in different words."""
+    meeting = agent.parse_instruction(
+        "Schedule a client meeting for 5 March at 10 AM. "
+        "Location: Main Building, Auditorium"
+    )
+
+    assert meeting["venue"] == "Main Building, Auditorium"
+
+
+def test_a_time_followed_only_by_attendees_leaves_the_venue_unspecified(
+    agent: AutomationAgent,
+) -> None:
+    """ "at 9 AM with Omkar" names no place, so none is invented.
+
+    Once " at " also introduces a venue, the clause after the time must not
+    be read as one: "with Omkar" is the attendee clause, not a room.
+    """
+    meeting = agent.parse_instruction("Schedule a standup at 9 AM with Omkar")
+
+    assert meeting["venue"] == "Not Specified"
+
+
+def test_a_comma_separated_venue_keeps_both_parts(agent: AutomationAgent) -> None:
+    """A venue containing a comma is captured whole, not split at the comma."""
+    meeting = agent.parse_instruction(
+        "Schedule an orientation session on 12 June at 2 PM "
+        "at Main Building, Auditorium with Omkar"
+    )
+
+    assert meeting["venue"] == "Main Building, Auditorium"
+    assert meeting["title"] == "Employee Orientation"
+
+
+# --------------------------------------------------------------------------
+# Event type: an orientation is drafted as an orientation
+# --------------------------------------------------------------------------
+
+
+def test_orientation_is_detected_as_the_event_type(
+    agent: AutomationAgent,
+) -> None:
+    """ "orientation" names the event, so the title says so.
+
+    The previous behaviour fell through to the generic "Meeting", and the
+    drafted email described a project meeting.
+    """
+    meeting = agent.parse_instruction(
+        "Schedule an employee orientation on 15 May 2025 at 10:00 AM "
+        "at Head Office, Conference Hall and invite Omkar"
+    )
+
+    assert meeting["title"] == "Employee Orientation"
+
+
+def test_onboarding_is_also_an_orientation(agent: AutomationAgent) -> None:
+    """ "onboarding" is the same event under another name."""
+    meeting = agent.parse_instruction("Plan an onboarding session for Omkar")
+
+    assert meeting["title"] == "Employee Orientation"
+
+
+class RecordingLLM:
+    """Stands in for ``LocalLLM`` and keeps every prompt it is shown.
+
+    ``generate_email`` is prompt work, so the prompt itself is the observable
+    output to assert on.
+    """
+
+    def __init__(self) -> None:
+        """Start with no recorded prompts."""
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        """Record the prompt and return a placeholder body.
+
+        Args:
+            prompt: The prompt that would be sent to Ollama.
+
+        Returns:
+            A placeholder email body.
+        """
+        self.prompts.append(prompt)
+        return "Dear Team,"
+
+
+def test_orientation_email_prompts_for_an_orientation() -> None:
+    """The drafted email follows the event type, not a project meeting.
+
+    Regression test: one prompt covered every event, so an orientation came
+    back described as a project meeting.
+    """
+    llm = RecordingLLM()
+    agent = AutomationAgent(llm=llm)
+
+    agent.execute(
+        "Schedule an employee orientation on 15 May 2025 at 10:00 AM "
+        "at Head Office, Conference Hall and invite Omkar"
+    )
+
+    prompt = llm.prompts[-1]
+
+    assert "orientation invitation" in prompt
+    assert "Head Office, Conference Hall" in prompt
+    assert "Employee Orientation" in prompt
+
+
+def test_email_greets_the_resolved_employee_by_name() -> None:
+    """A draft for one named employee greets that employee.
+
+    Regression test: every prompt ended with a literal "Dear Team,", even
+    when the employee had been resolved from the directory.
+    """
+    llm = RecordingLLM()
+    agent = AutomationAgent(llm=llm)
+
+    agent.execute("Schedule an employee orientation for Omkar tomorrow at 10 AM")
+
+    assert "Dear Omkar Shenwai," in llm.prompts[-1]
+
+
+def test_email_without_a_recipient_keeps_the_team_greeting() -> None:
+    """With nobody resolved there is no name to greet, so the fallback stands."""
+    llm = RecordingLLM()
+    agent = AutomationAgent(llm=llm)
+
+    agent.execute("Schedule a sprint planning for 5 March at 10 AM")
+
+    assert "Dear Team," in llm.prompts[-1]

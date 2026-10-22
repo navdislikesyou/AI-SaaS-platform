@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 
@@ -20,12 +21,17 @@ logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
+_REQUEST_ID_ALLOW = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Bind a request id to each request and log its outcome.
 
     An inbound ``X-Request-ID`` is reused when present so that a correlation
     id set by an upstream proxy or the frontend survives end to end.
+
+    Invalid values are rejected: the header is ignored and a fresh, cryptographic
+    ID is generated instead.
     """
 
     async def dispatch(
@@ -42,7 +48,22 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         Returns:
             The response, with the request id header attached.
         """
-        request_id = request.headers.get(REQUEST_ID_HEADER) or new_request_id()
+        raw_id = request.headers.get(REQUEST_ID_HEADER)
+
+        if raw_id is None:
+            request_id = new_request_id()
+        else:
+            raw_id = raw_id.strip()
+            if not _REQUEST_ID_ALLOW.match(raw_id):
+                logger.warning(
+                    "invalid_request_id value=%s client_ip=%s",
+                    raw_id,
+                    request.client.host if request.client else "unknown",
+                )
+                request_id = new_request_id()
+            else:
+                request_id = raw_id
+
         token = set_request_id(request_id)
         started = time.perf_counter()
         status_code = 500

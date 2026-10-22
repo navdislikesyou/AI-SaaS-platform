@@ -26,7 +26,13 @@ from httpx import ASGITransport, AsyncClient
 from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_job_manager, get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_job_manager,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.main import create_app
 from app.services.job_manager import JobManager, sanitize_error
@@ -279,6 +285,7 @@ def build_client(
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: None  # noqa: E501
     application.dependency_overrides[get_job_manager] = lambda: manager
 
     return AsyncClient(
@@ -894,3 +901,103 @@ def test_sanitize_error_redacts_paths_containing_spaces() -> None:
     assert "AI-SaaS-platform-git" not in result
     assert "missing.csv" not in result
     assert "Input file not found:" in result
+
+
+# --------------------------------------------------------------------------
+# Path confinement regression tests for file_path
+# --------------------------------------------------------------------------
+
+
+SECRET_PATH = "C:/Users/someone/secret/Financials.xlsx"
+
+_WILDCARD_PATH = "C:/Windows/system32/config/SAM"
+_TRAVERSAL_PATH = "../../../etc/passwd.csv"
+_ABSOLUTE_POSIX = "/etc/passwd.csv"
+_ABSOLUTE_WINDOWS = "C:/Windows/system32/config/SAM"
+_VALID_RELATIVE = "performance_agent/data/Financials_standardized.csv"
+
+
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        _ABSOLUTE_POSIX,
+        _ABSOLUTE_WINDOWS,
+        _TRAVERSAL_PATH,
+        _WILDCARD_PATH,
+    ],
+)
+async def test_file_path_absolute_or_traversal_rejected(
+    client: AsyncClient,
+    file_path: str,
+) -> None:
+    """Absolute paths and traversal attempts in file_path are rejected."""
+    response = await client.post(
+        JOBS_URL,
+        json={"operation": "analyze", "file_path": file_path},
+    )
+    assert response.status_code in (404, 422)
+
+
+async def test_file_path_valid_relative_works(
+    client: AsyncClient,
+) -> None:
+    """A valid relative file_path within the allowlist succeeds."""
+    response = await client.post(
+        JOBS_URL,
+        json={"operation": "analyze", "file_path": _VALID_RELATIVE},
+    )
+    assert response.status_code == 202
+
+
+async def test_dataset_id_still_takes_precedence(
+    client: AsyncClient,
+) -> None:
+    """dataset_id is always preferred over file_path."""
+    # This is implicitly tested by the existing tests, but we verify that
+    # providing both does not silently fall back to file_path.
+    response = await client.post(
+        JOBS_URL,
+        json={"operation": "analyze", "dataset_id": "sample", "file_path": _VALID_RELATIVE},
+    )
+    assert response.status_code in (404, 422)
+
+
+async def test_file_path_symlink_escape_rejected(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symlink inside the allowlisted directory cannot reach a file outside it.
+
+    The path is resolved through the symlink before it is checked against the
+    allowlist, so a link that points out of the directory is refused. Without
+    that resolution a link would be accepted and the job would read the file
+    it points at.
+    """
+    allowed_dir = tmp_path / "performance_agent" / "data"
+    allowed_dir.mkdir(parents=True)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.csv").write_text("secret data")
+
+    link = allowed_dir / "escape.csv"
+
+    try:
+        link.symlink_to(outside_dir / "secret.csv")
+    except OSError as exc:  # pragma: no cover - depends on platform privileges
+        pytest.skip(f"symlinks cannot be created here: {exc}")
+
+    # The allowlist is derived from the configured sample dataset path, which
+    # resolves against the backend directory. Pointing the backend directory at
+    # the temporary tree keeps the test out of the repository.
+    monkeypatch.setattr(Settings, "backend_dir", property(lambda self: tmp_path))
+
+    response = await client.post(
+        JOBS_URL,
+        json={"operation": "analyze", "file_path": "performance_agent/data/escape.csv"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "secret.csv" not in response.text

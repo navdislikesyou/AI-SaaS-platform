@@ -75,12 +75,19 @@ class PerformanceAgentAdapter(PlaceholderAgentAdapter):
             "/api/v1/performance/jobs, not through this endpoint."
         )
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Refuse synchronous execution.
 
         Args:
             operation: The requested operation. Always rejected.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Raises:
             NotImplementedError: Always. The base class availability guard

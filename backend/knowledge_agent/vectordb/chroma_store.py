@@ -118,19 +118,68 @@ class ChromaStore:
 
         return len(ids)
 
-    def search(self, query: str, k: int = 5, fetch_k: int = 8) -> list[Any]:
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 8,
+        user_context: dict[str, Any] | None = None,
+    ) -> list[Any]:
         """Return the chunks most relevant to a query.
+
+        When ``user_context`` carries an ``organization_id``, the query is
+        scoped to that organization. The scope is applied inside Chroma through
+        a metadata filter, so another organization's chunks never enter the
+        candidate pool at all. A second pass over the returned documents
+        enforces the same rule again, because the filter is the only thing
+        standing between a foreign document and the prompt.
+
+        Documents that carry no ``organization_id`` metadata are legacy records
+        and are treated as inaccessible to every organization, since ownership
+        cannot be established for them.
 
         Args:
             query: The search text.
             k: Number of chunks to return.
             fetch_k: Candidate pool to rerank.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             Matching documents, most relevant first.
         """
-        return self.vector_store.max_marginal_relevance_search(
+        organization_id = None
+        if user_context:
+            organization_id = user_context.get("organization_id")
+
+        search_filter = None
+        if organization_id is not None:
+            search_filter = {"organization_id": organization_id}
+
+        results = self.vector_store.max_marginal_relevance_search(
             query=query,
             k=k,
             fetch_k=fetch_k,
+            filter=search_filter,
         )
+
+        if organization_id is None:
+            return results
+
+        scoped: list[Any] = []
+        for document in results:
+            metadata = getattr(document, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("organization_id") != organization_id:
+                continue
+            scoped.append(document)
+
+        logger.info(
+            "chroma_search_scoped organization_id=%s returned=%d fetched=%d",
+            organization_id,
+            len(scoped),
+            len(results),
+        )
+
+        return scoped

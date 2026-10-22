@@ -63,6 +63,7 @@ class Orchestrator:
         agent_name: str,
         operation: str,
         payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
     ) -> AgentExecuteResponse:
         """Execute one operation on one agent.
 
@@ -70,6 +71,8 @@ class Orchestrator:
             agent_name: The agent identifier requested by the client.
             operation: The operation to run.
             payload: Operation-specific input.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             A standardized execution response.
@@ -83,7 +86,7 @@ class Orchestrator:
         """
         adapter = self.resolve(agent_name)
         started = time.perf_counter()
-        data = await adapter.execute(operation, payload)
+        data = await adapter.execute(operation, payload, user_context=user_context)
         duration_ms = (time.perf_counter() - started) * 1000
 
         return AgentExecuteResponse(

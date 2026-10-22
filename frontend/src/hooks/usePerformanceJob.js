@@ -32,6 +32,11 @@ const EMPTY_EXECUTION = Object.freeze({
  * flag: PERFORMANCE_AGENT_ENABLED only controls the catalog entry, while the
  * job API runs independently of it.
  *
+ * A job names its dataset by id, not by path. `datasetId` is resolved by the
+ * server to a file it controls; `filePath` exists only for the server-side
+ * workflow that predates uploads. Exactly one is sent, and the backend rejects
+ * both together rather than guessing which one was meant.
+ *
  * No client-side timeout is applied, matching the backend, which currently
  * enforces no time limit on a Performance job.
  */
@@ -136,7 +141,7 @@ export function usePerformanceJob() {
   }, [poll]);
 
   const submit = useCallback(
-    async (operation, filePath) => {
+    async (operation, filePath, datasetId) => {
       // Only this operation's loop is cancelled. Any other operation keeps
       // running in the background.
       clearTimer(operation);
@@ -150,7 +155,7 @@ export function usePerformanceJob() {
       });
 
       try {
-        const created = await performanceService.createJob(operation, filePath);
+        const created = await performanceService.createJob(operation, filePath, datasetId);
 
         if (!mountedRef.current) return null;
 

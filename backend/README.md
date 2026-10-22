@@ -583,14 +583,111 @@ needs persistent shared storage and a real metadata store.
 There is **no delete operation** for an employee directory, for the same reason
 there is none for a document.
 
+### `POST /api/v1/performance/datasets`
+
+Upload a dataset from a browser. Returns **201 Created** with the id that
+identifies it. That id is what a job request refers to; the stored path is never
+returned.
+
+Accepted extensions are `.csv` and `.xlsx`. `.xls` is **not** accepted: the
+loader routes it to the `xlrd` engine, which is not a dependency, so it would be
+accepted here only to fail later as an opaque job error. It is refused up front
+with a message that names the formats that do work.
+
+The file is streamed to disk with the size limit enforced **during** the write,
+so an oversized upload is abandoned rather than buffered, and a rejected upload
+leaves no file behind. After the write the file is read back through a **bounded**
+preview — header plus five rows — which proves the parser can open it and yields
+its real column names without loading the whole dataset. An XLSX must also be a ZIP
+container, so a CSV renamed `.xlsx` is caught before the parser sees it.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/performance/datasets \
+  -F 'file=@Financials.csv'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "dataset": {
+      "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071",
+      "filename": "Financials.csv",
+      "format": "csv",
+      "size_bytes": 20480,
+      "status": "ready",
+      "column_names": ["date", "sales", "profit"],
+      "column_count": 3,
+      "is_sample": false,
+      "available": true,
+      "uploaded_at": "2026-01-01T00:00:00Z"
+    },
+    "message": "'Financials.csv' is ready to analyse."
+  },
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+`column_names` are **normalized** — trimmed, lowercased, spaces turned into
+underscores — because that is what the analyzers look for, so what the client is
+told matches what a later job will actually use.
+
+Rejected with 422 `VALIDATION_ERROR`: an unsupported extension, a file over
+`PERFORMANCE_MAX_UPLOAD_BYTES`, an empty file, a mislabelled container, a CSV that
+is not UTF-8, a header row that names no column, a file that holds a header but no
+data rows, or a file the parser cannot open. Messages never contain a filesystem
+path or a traceback.
+
+### `GET /api/v1/performance/datasets`
+
+List the datasets a job may run against: the packaged sample first, then this
+instance's uploads, newest first. Also reports the server's own size limit and
+accepted formats so a client does not have to hardcode them.
+
+```json
+{
+  "datasets": [
+    {
+      "dataset_id": "sample",
+      "filename": "Financials_standardized.csv",
+      "format": "csv",
+      "is_sample": true,
+      "available": true
+    }
+  ],
+  "total": 1,
+  "max_upload_bytes": 26214400,
+  "supported_extensions": [".csv", ".xlsx"]
+}
+```
+
 ### `POST /api/v1/performance/jobs`
 
 Submit a Performance Analyzer job. Returns **202 Accepted** immediately; the
 analysis runs on a worker thread while the client polls. Supported operations:
 `load_dataset`, `compute_kpis`, `compare_periods`, `analyze`, `visualize`.
 
-`file_path` is a path on the **server**, not an upload. Supported extensions are
-`.csv`, `.xlsx`, and `.xls`. Relative paths resolve from `backend/`.
+A job names its dataset in one of two ways, and exactly one must be present.
+
+**`dataset_id` — preferred.** An id from the upload route, or the reserved value
+`sample` for the packaged dataset. The server resolves the id to a path it
+controls, so no client-supplied string is ever used as a filesystem path. An
+unknown id, a tampered id, or an id whose file was deleted fails the request with
+404 `DATASET_NOT_FOUND` **before a job is created**. There is no fallback: if the
+dataset cannot be resolved, no job runs, because silently analysing a different
+file than the one selected would report success for the wrong data.
+
+```json
+{
+  "operation": "analyze",
+  "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071"
+}
+```
+
+**`file_path` — the pre-existing server-side workflow.** A path on the **server**,
+not an upload, retained for callers that index a file already on disk. Relative
+paths resolve from `backend/`. Supplying both references is rejected rather than
+resolved.
 
 ```json
 {
@@ -624,6 +721,11 @@ Operation behaviour:
 | `compare_periods` | Period comparison across consecutive years on overlapping months. |
 | `analyze` | All 9 analyzers plus business insights. No charts written. |
 | `visualize` | Chart metadata. Renders 39 PNGs for the bundled dataset. |
+
+Note on `load_dataset`: the service reports the path it read, and the job runner
+reduces that to a bare filename before it reaches a client. An uploaded dataset
+lives under the upload directory, so returning the path as given would disclose
+the server's directory layout.
 
 ### `GET /api/v1/performance/jobs/{job_id}`
 
@@ -672,8 +774,26 @@ performance_agent/results/visualizations/jobs/<job_id>/visualizations/
 ```
 
 The API returns metadata only — `name`, `filename`, `size_bytes`. It never
-exposes an absolute filesystem path. There is no endpoint that serves the chart
-files yet.
+exposes an absolute filesystem path.
+
+### Performance dataset storage is a local MVP
+
+Uploaded datasets are stored under `PERFORMANCE_UPLOAD_DIR`, separate from
+`performance_agent/data/`, so an upload can never overwrite a packaged sample.
+Stored names are generated (`<uuid>_<safe-stem><ext>`), written with an exclusive
+create, and the original filename is kept only as display metadata. The manifest is
+a single JSON file, as with the other uploads.
+
+This inherits every limitation of the upload storage described above, and it is
+worth stating plainly: uploaded datasets are **not shared between instances**, they
+do **not survive** replacing the container or the checkout because nothing backs
+the directory, and there is **no delete route**, so the directory grows until an
+operator removes files by hand. A deployment needs persistent shared storage and a
+real metadata store. Nothing else about the pipeline changes when that happens,
+because the job runner only ever receives a path.
+
+The sample dataset is the exception: it lives in the agent package and is resolved
+from configuration, so it is always available and always the same file.
 
 ### Performance job limitations
 
@@ -694,6 +814,7 @@ storage.
 | 404 | `AGENT_NOT_FOUND` | No agent registered under that name |
 | 404 | `OPERATION_NOT_FOUND` | Agent does not advertise that operation |
 | 404 | `JOB_NOT_FOUND` | No Performance job with that id |
+| 404 | `DATASET_NOT_FOUND` | Unknown, tampered, or no-longer-present dataset id |
 | 422 | `VALIDATION_ERROR` | Malformed body or failed schema validation |
 | 500 | `INTERNAL_ERROR` | Unexpected server fault (details never exposed) |
 | 502 | `AGENT_EXECUTION_FAILED` | Connected agent raised |
@@ -724,6 +845,10 @@ environment. See `.env.example`. Notable keys:
 | `AUTOMATION_UPLOAD_MANIFEST_PATH` | `uploads/automation/directories.json` | Employee directory metadata manifest |
 | `AUTOMATION_MAX_UPLOAD_BYTES` | `2097152` (2 MB) | Employee directory upload limit, enforced while streaming |
 | `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | `5000` | Largest accepted employee count in one directory |
+| `PERFORMANCE_UPLOAD_DIR` | `uploads/performance` | Where uploaded datasets are stored; local disk, see below |
+| `PERFORMANCE_UPLOAD_MANIFEST_PATH` | `uploads/performance/datasets.json` | Dataset metadata manifest |
+| `PERFORMANCE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Dataset upload limit, enforced while streaming |
+| `PERFORMANCE_SAMPLE_DATASET_PATH` | `performance_agent/data/Financials_standardized.csv` | Dataset exposed to browsers as `sample`; resolved server-side |
 | `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |
@@ -831,9 +956,8 @@ rather than milliseconds should follow that pattern instead.
 
 Authentication, authorization, RBAC, and per-user data — `app/api/deps.py` is
 the seam; add a dependency there rather than editing each route. Also pending:
-database and persistence, Performance dataset upload endpoints, a durable or
-shared file store for Knowledge uploads (see below), document deletion, an
-endpoint that serves Performance visualization files, streaming responses (SSE),
+database and persistence, a durable or shared file store for the three upload
+directories (see below), document and dataset deletion, streaming responses (SSE),
 rate limiting, and LLM-based agent routing.
 
 To add a synchronous agent: implement `AgentAdapter`, register it in

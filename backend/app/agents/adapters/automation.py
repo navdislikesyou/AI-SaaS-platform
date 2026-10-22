@@ -26,7 +26,12 @@ import logging
 from typing import Any
 
 from app.agents.base import AgentAdapter
-from app.core.exceptions import AgentUnavailableError, ValidationFailedError
+from app.core.exceptions import (
+    AgentUnavailableError,
+    DirectoryNotFoundError,
+    ForbiddenError,
+    ValidationFailedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +187,12 @@ class AutomationAgentAdapter(AgentAdapter):
             "dependencies are installed and that configuration is correct."
         )
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Validate the payload, then call the service.
 
         An uploaded directory is resolved here and handed to the service for this
@@ -192,6 +202,8 @@ class AutomationAgentAdapter(AgentAdapter):
         Args:
             operation: One of :data:`ADVERTISED_CAPABILITIES`.
             payload: Operation-specific input.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             The service result, with recipients reduced to the public fields and
@@ -199,8 +211,10 @@ class AutomationAgentAdapter(AgentAdapter):
 
         Raises:
             ValidationFailedError: If a required key is missing or blank (422).
-            DirectoryNotFoundError: If ``directory_id`` is unknown or its file
-                is gone (404).
+            ForbiddenError: If the caller has no organisation, so a directory
+                cannot be scoped to it (403).
+            DirectoryNotFoundError: If ``directory_id`` is unknown, its file
+                is gone, or it belongs to another organisation (404).
             AgentUnavailableError: If no service is connected (503).
         """
         service = self._require_service()
@@ -209,9 +223,11 @@ class AutomationAgentAdapter(AgentAdapter):
         directory_id = _directory_id(cleaned)
 
         if not directory_id:
-            result = service.execute(cleaned["instruction"])
+            result = service.execute(cleaned["instruction"], user_context=user_context)
 
             return _public_result(result, None)
+
+        self._require_owned_directory(directory_id, user_context)
 
         employees = self._require_directory_service().load_records(directory_id)
 
@@ -221,9 +237,55 @@ class AutomationAgentAdapter(AgentAdapter):
             len(employees),
         )
 
-        result = service.execute(cleaned["instruction"], employees)
+        result = service.execute(cleaned["instruction"], employees, user_context=user_context)
 
         return _public_result(result, directory_id)
+
+    def _require_owned_directory(
+        self,
+        directory_id: str,
+        user_context: dict[str, Any] | None,
+    ) -> None:
+        """Refuse a directory that belongs to another organisation.
+
+        The directory id arrives from the client, so it can be substituted with
+        one belonging to a different tenant. The check happens before the
+        roster is read, and a directory owned by another organisation is
+        reported as missing so the response does not confirm that it exists.
+
+        Args:
+            directory_id: The directory the client asked for.
+            user_context: The principal's context, or None for an anonymous
+                caller.
+
+        Raises:
+            ForbiddenError: If the caller presents no organisation (403).
+            DirectoryNotFoundError: If the directory is unknown or belongs to
+                another organisation (404).
+        """
+        from app.services.employee_directory import find_directory_row, get_manifest
+
+        organization_id = None
+        if user_context:
+            organization_id = user_context.get("organization_id")
+
+        if organization_id is None:
+            raise ForbiddenError(
+                "Drafting against an uploaded directory requires an "
+                "authenticated organisation.",
+                details={
+                    "agent": AutomationAgentAdapter.AGENT_NAME,
+                    "reason": "missing_organization",
+                },
+            )
+
+        row = find_directory_row(directory_id, get_manifest())
+
+        if row is None or row.get("organization_id") != organization_id:
+            raise DirectoryNotFoundError(
+                f"Employee directory '{directory_id}' was not found.",
+                details={"directory_id": directory_id},
+            )
 
     def _require_directory_service(self) -> Any:
         """Return the service that resolves uploaded directory ids.

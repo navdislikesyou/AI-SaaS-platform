@@ -977,6 +977,10 @@ def set_manifest(manifest: EmployeeDirectoryManifest | None) -> None:
     _manifest = manifest
 
 
+set_directory_manifest_store = set_manifest
+"""Alias for ``set_manifest``, used by ``app.api.deps.reset_state``."""
+
+
 def get_directory_service(settings: Settings | None = None) -> EmployeeDirectoryService:
     """Return the process-wide employee directory service.
 
@@ -1019,6 +1023,8 @@ def build_row(
     status: DirectoryStatus,
     employee_count: int | None = None,
     error: str | None = None,
+    organization_id: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     """Build one manifest row.
 
@@ -1031,6 +1037,8 @@ def build_row(
         status: Validation outcome.
         employee_count: Records accepted, when validation succeeded.
         error: Sanitized failure reason, when it did not.
+        organization_id: The organisation that owns the directory.
+        owner_id: The user who uploaded the directory.
 
     Returns:
         A JSON-serializable manifest row.
@@ -1044,6 +1052,11 @@ def build_row(
         "status": status.value,
         "uploaded_at": datetime.now().astimezone().isoformat(),
     }
+
+    if organization_id is not None:
+        row["organization_id"] = organization_id
+    if owner_id is not None:
+        row["owner_id"] = owner_id
 
     if employee_count is not None:
         row["employee_count"] = employee_count
@@ -1087,15 +1100,25 @@ def list_directories(
 ) -> list[dict[str, Any]]:
     """Return manifest rows, newest first.
 
+    Rows whose ``organization_id`` is ``None`` are excluded from the default
+    listing to prevent legacy data without ownership from being globally
+    readable.  Administrators can reassign or remove such records through
+    the manifest store's direct JSON manipulation.
+
     Args:
         manifest: Manifest to read from. Defaults to the process-wide store.
         status: Optional filter for one validation outcome.
         limit: Maximum number of rows to return.
 
     Returns:
-        Rows ordered newest to oldest.
+        Rows ordered newest to oldest, excluding records with
+        ``organization_id`` ``None``.
     """
     rows = (manifest or get_manifest()).read()
+
+    # Exclude records without organization_id to prevent legacy data without
+    # ownership from being globally readable.
+    rows = [row for row in rows if row.get("organization_id") is not None]
 
     if status is not None:
         rows = [row for row in rows if row.get("status") == status.value]
