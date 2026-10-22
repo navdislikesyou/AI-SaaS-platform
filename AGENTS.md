@@ -65,6 +65,7 @@ backend/
     services/
       orchestrator.py  dispatch only
       job_manager.py   in-process background jobs for Performance
+      dataset_upload.py  browser dataset uploads; resolves dataset_id to a path
   knowledge_agent/     RAG agent: loaders, splitter, embeddings, vector store
   automation_agent/    Automation agent: parser, employee directory, drafting
   performance_agent/   data analytics: dataset, analyzers, visualizations, insights
@@ -164,7 +165,8 @@ mypy app
 - Raise `AppError` subclasses (`core/exceptions.py`); never bare `except:`.
 - Map domain errors to status codes in one place only.
   `UnknownAgentError` → 404, `UnknownOperationError` → 404,
-  `JobNotFoundError` → 404, `ValidationFailedError` → 422,
+  `JobNotFoundError` → 404, `DatasetNotFoundError` → 404,
+  `DirectoryNotFoundError` → 404, `ValidationFailedError` → 422,
   `AgentExecutionError` → 502, `AgentUnavailableError` → 503,
   `AgentTimeoutError` → 504.
 - Log full tracebacks server-side; never return them. Error bodies carry only
@@ -226,6 +228,15 @@ the wrong shape.
 (`queued → running → completed | failed`) and calls `PerformanceService` on a
 worker thread via `anyio.to_thread.run_sync`, spawned with
 `asyncio.create_task` so the response returns immediately.
+
+A job names its dataset by `dataset_id` — an uploaded dataset from
+`POST /api/v1/performance/datasets`, or the reserved id `sample` for the packaged
+one — which the router resolves to a path the server owns *before* the job
+exists. An unresolvable id is 404 `DATASET_NOT_FOUND` and no job is created; there
+is no fallback, because analysing a different file than the one selected would
+report success for the wrong data. `file_path` remains for the pre-existing
+server-side workflow, and the two are mutually exclusive on a request. Do not
+resolve a client-supplied string against the filesystem.
 
 The store is an in-process dictionary. There is no Celery, Redis, or database
 behind it. Do not describe any of those as implemented. Consequences: jobs do

@@ -13,9 +13,16 @@ from fastapi import APIRouter, Depends, status
 
 from app.agents.base import AgentAdapter
 from app.agents.registry import AgentRegistry
-from app.api.deps import get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+    user_context_for,
+)
 from app.core.config import Settings
 from app.core.logging_config import get_request_id
+from app.models import User
 from app.schemas.agent import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -146,6 +153,7 @@ async def get_agent(
 )
 async def execute_agent_operation(
     request: AgentExecuteRequest,
+    user: User | None = Depends(get_current_user_from_token_optional_principal),
     orchestrator: Orchestrator = Depends(get_orchestrator),
     settings: Settings = Depends(get_settings_dep),
 ) -> APIResponse[AgentExecuteResponse]:
@@ -153,6 +161,7 @@ async def execute_agent_operation(
 
     Args:
         request: The agent, operation, and payload to run.
+        user: The authenticated principal, if any.
         orchestrator: The orchestrator performing the dispatch.
         settings: Application settings.
 
@@ -166,6 +175,8 @@ async def execute_agent_operation(
         AgentTimeoutError: If the agent exceeds its timeout (504).
         AgentExecutionError: If the agent fails (502).
     """
+    user_context = user_context_for(user)
+
     if settings.is_production:
         logger.warning(
             "agent_execute agent=%s operation=%s request_id=%s",
@@ -174,7 +185,12 @@ async def execute_agent_operation(
             get_request_id(),
         )
 
-    result = await orchestrator.execute(request.agent, request.operation, request.payload)
+    result = await orchestrator.execute(
+        request.agent,
+        request.operation,
+        request.payload,
+        user_context=user_context,
+    )
     return APIResponse(
         data=result,
         message=f"Operation '{request.operation}' completed on '{request.agent}'.",

@@ -115,6 +115,77 @@ class JobNotFoundError(AppError):
     error_code = "JOB_NOT_FOUND"
 
 
+class DirectoryNotFoundError(AppError):
+    """Raised when an uploaded employee directory cannot be used.
+
+    Covers a directory id that was never issued and one whose stored file is
+    gone. The two are deliberately indistinguishable to a client: telling them
+    apart would confirm whether a given identifier ever existed, which is a small
+    amount of information about a roster nobody is authorized to see.
+    """
+
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = "DIRECTORY_NOT_FOUND"
+
+
+class DatasetNotFoundError(AppError):
+    """Raised when an uploaded performance dataset cannot be used.
+
+    Covers a dataset id that was never issued, one whose stored file is gone, and
+    one that is not the reserved ``sample`` id. The cases are deliberately
+    indistinguishable to a client: the distinction would confirm whether a given
+    identifier ever existed, and would turn this endpoint into a probe for server
+    file layout.
+
+    A caller must never fall back to another dataset after catching this. A
+    fallback would analyse a different file than the one that was selected while
+    reporting success.
+    """
+
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = "DATASET_NOT_FOUND"
+
+
+class InvalidCredentialsError(AppError):
+    """Raised when login credentials are invalid.
+
+    Maps to 401 Unauthorized. Error messages do not confirm whether the email
+    exists, to prevent user enumeration attacks.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    error_code = "INVALID_CREDENTIALS"
+
+    #: The message is fixed. It must not reveal whether the email exists, so
+    #: a caller cannot change it into an enumeration oracle.
+    DEFAULT_MESSAGE = "Invalid email or password."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        details: Any | None = None,
+    ) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable description. Defaults to a message that
+                does not reveal whether the account exists.
+            details: Optional structured detail payload.
+        """
+        super().__init__(message or self.DEFAULT_MESSAGE, details)
+
+
+class ForbiddenError(AppError):
+    """Raised when an authenticated user lacks permission for the requested
+    operation.
+
+    Maps to 403 Forbidden.
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    error_code = "FORBIDDEN"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the shared exception handlers to an application.
 

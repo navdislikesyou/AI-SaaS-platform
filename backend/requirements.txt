@@ -4,6 +4,9 @@ pydantic>=2.10.4
 pydantic-settings>=2.7.0
 python-dotenv>=1.0.1
 
+# Multipart form parsing. Required by FastAPI for POST /api/v1/knowledge/documents.
+python-multipart>=0.0.20
+
 # Testing
 pytest>=8.3.4
 pytest-asyncio>=0.25.0
@@ -12,3 +15,13 @@ httpx>=0.28.1
 # Linting / typing
 ruff>=0.8.6
 mypy>=1.14.1
+
+# Authentication and database
+argon2-cffi>=21.0.0
+PyJWT>=2.8.0
+alembic>=1.10.0
+SQLAlchemy>=2.0.36
+# Async drivers for the URLs the application accepts. aiosqlite backs the
+# default ``sqlite:///`` URL; asyncpg backs the ``postgresql://`` URL.
+aiosqlite>=0.20.0
+asyncpg>=0.29.0

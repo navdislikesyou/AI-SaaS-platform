@@ -21,11 +21,25 @@ from httpx import ASGITransport, AsyncClient
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.core.exceptions import AgentExecutionError, ValidationFailedError
 from app.main import create_app
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
+
+#: Principal handed to the adapter under test. The adapters authorize the
+#: caller before they reach the agent, so a principal is required.
+PRINCIPAL = {
+    "user_id": "test-user-1",
+    "organization_id": "test-org-1",
+    "role": "employee",
+}
 
 EXECUTE_URL = "/api/v1/agents/execute"
 
@@ -61,11 +75,16 @@ class FakeKnowledgeService:
         self._error = error
         self.calls: list[tuple[str, Any]] = []
 
-    def ingest(self, file_path: str) -> dict[str, Any]:
+    def ingest(
+        self,
+        file_path: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return the configured ingest result.
 
         Args:
             file_path: Path forwarded by the adapter.
+            user_context: Principal context forwarded by the adapter.
 
         Returns:
             The configured ingest result.
@@ -78,11 +97,16 @@ class FakeKnowledgeService:
             raise self._error
         return self._ingest_result
 
-    def query(self, question: str) -> dict[str, Any]:
+    def query(
+        self,
+        question: str,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return the configured query result.
 
         Args:
             question: Question forwarded by the adapter.
+            user_context: Principal context forwarded by the adapter.
 
         Returns:
             The configured query result.
@@ -171,6 +195,7 @@ def client_for(settings: Settings) -> Any:
         application.dependency_overrides[get_settings_dep] = lambda: settings
         application.dependency_overrides[get_registry] = lambda: registry
         application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+        application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
         return AsyncClient(
             transport=ASGITransport(app=application),  # type: ignore[arg-type]
             base_url="http://testserver",
@@ -189,7 +214,9 @@ async def test_ingest_document_returns_expected_dict_shape(
     service: FakeKnowledgeService,
 ) -> None:
     """A successful ingest returns exactly ``indexed`` and ``chunk_count``."""
-    result = await adapter.execute("ingest_document", {"file_path": "hr.pdf"})
+    result = await adapter.execute("ingest_document", {"file_path": "hr.pdf"},
+        user_context=PRINCIPAL,
+)
 
     assert set(result) == {"indexed", "chunk_count"}
     assert isinstance(result["indexed"], bool)
@@ -201,7 +228,9 @@ async def test_ingest_document_forwards_the_file_path(
     service: FakeKnowledgeService,
 ) -> None:
     """The adapter passes the client's ``file_path`` through unchanged."""
-    await adapter.execute("ingest_document", {"file_path": "docs/policy.pdf"})
+    await adapter.execute("ingest_document", {"file_path": "docs/policy.pdf"},
+        user_context=PRINCIPAL,
+)
 
     assert service.calls == [("ingest", "docs/policy.pdf")]
 
@@ -211,7 +240,9 @@ async def test_ingest_document_reports_zero_chunks_as_not_indexed() -> None:
     service = FakeKnowledgeService(ingest_result={"indexed": False, "chunk_count": 0})
     adapter = KnowledgeAgentAdapter(service=service)
 
-    result = await adapter.execute("ingest_document", {"file_path": "empty.txt"})
+    result = await adapter.execute("ingest_document", {"file_path": "empty.txt"},
+        user_context=PRINCIPAL,
+)
 
     assert result == {"indexed": False, "chunk_count": 0}
 
@@ -221,7 +252,9 @@ async def test_query_returns_expected_dict_shape(
     service: FakeKnowledgeService,
 ) -> None:
     """A successful query returns an ``answer`` string and a ``sources`` list."""
-    result = await adapter.execute("query", {"question": "What is the leave policy?"})
+    result = await adapter.execute("query", {"question": "What is the leave policy?"},
+        user_context=PRINCIPAL,
+)
 
     assert set(result) == {"answer", "sources"}
     assert isinstance(result["answer"], str)
@@ -233,7 +266,7 @@ async def test_query_forwards_the_question(
     service: FakeKnowledgeService,
 ) -> None:
     """The adapter passes the client's ``question`` through unchanged."""
-    await adapter.execute("query", {"question": "How many days of leave?"})
+    await adapter.execute("query", {"question": "How many days of leave?"}, user_context=PRINCIPAL)
 
     assert service.calls == [("query", "How many days of leave?")]
 
@@ -263,7 +296,7 @@ async def test_ingest_document_without_a_usable_path_is_rejected(
     the agent that broke.
     """
     with pytest.raises(ValidationFailedError) as exc_info:
-        await adapter.execute("ingest_document", payload)
+        await adapter.execute("ingest_document", payload, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 422
     assert "file_path" in exc_info.value.message
@@ -284,7 +317,7 @@ async def test_query_without_a_usable_question_is_rejected(
 ) -> None:
     """A missing or blank ``question`` raises a validation error."""
     with pytest.raises(ValidationFailedError) as exc_info:
-        await adapter.execute("query", payload)
+        await adapter.execute("query", payload, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 422
     assert "question" in exc_info.value.message
@@ -320,7 +353,7 @@ async def test_explicit_null_value_is_rejected(
     marker and close the bug.
     """
     with pytest.raises(ValidationFailedError) as exc_info:
-        await adapter.execute(operation, payload)
+        await adapter.execute(operation, payload, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 422
     assert expected_key in exc_info.value.message
@@ -332,7 +365,7 @@ async def test_rejected_payload_never_reaches_the_service(
 ) -> None:
     """Validation happens before the service is called at all."""
     with pytest.raises(ValidationFailedError):
-        await adapter.execute("query", {"question": "  "})
+        await adapter.execute("query", {"question": "  "}, user_context=PRINCIPAL)
 
     assert service.calls == []
 
@@ -387,7 +420,7 @@ async def test_unavailable_agent_returns_503(
     from app.core.exceptions import AgentUnavailableError
 
     with pytest.raises(AgentUnavailableError) as exc_info:
-        await adapter.execute("query", {"question": "q"})
+        await adapter.execute("query", {"question": "q"}, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 503
 
@@ -403,7 +436,7 @@ async def test_service_failure_becomes_agent_execution_error() -> None:
     adapter = KnowledgeAgentAdapter(service=service)
 
     with pytest.raises(AgentExecutionError) as exc_info:
-        await adapter.execute("query", {"question": "q"})
+        await adapter.execute("query", {"question": "q"}, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 502
     assert "/secret/path" not in exc_info.value.message
@@ -436,7 +469,7 @@ async def test_every_advertised_capability_is_reachable(
     }
 
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, payloads[operation])
+        result = await adapter.execute(operation, payloads[operation], user_context=PRINCIPAL)
         assert isinstance(result, dict)
 
 
@@ -448,7 +481,7 @@ async def test_operations_without_an_implementation_are_rejected(
 
     for operation in ("list_documents", "delete_document"):
         with pytest.raises(UnknownOperationError):
-            await adapter.execute(operation, {})
+            await adapter.execute(operation, {}, user_context=PRINCIPAL)
 
 
 # --------------------------------------------------------------------------
@@ -517,7 +550,11 @@ async def test_api_returns_504_when_the_agent_times_out(client_for: Any) -> None
     import time
 
     class SlowKnowledgeService(FakeKnowledgeService):
-        def query(self, question: str) -> dict[str, Any]:
+        def query(
+            self,
+            question: str,
+            user_context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             time.sleep(0.5)
             return {"answer": "late", "sources": []}
 
@@ -530,6 +567,7 @@ async def test_api_returns_504_when_the_agent_times_out(client_for: Any) -> None
     application.dependency_overrides[get_settings_dep] = lambda: fast
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
 
     async with AsyncClient(
         transport=ASGITransport(app=application),  # type: ignore[arg-type]

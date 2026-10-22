@@ -27,7 +27,12 @@ from httpx import ASGITransport, AsyncClient
 from app.agents.adapters.automation import AutomationAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.core.exceptions import (
     AgentExecutionError,
@@ -37,6 +42,15 @@ from app.core.exceptions import (
 )
 from app.main import create_app
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
+
+#: Principal handed to the adapter under test. The adapters authorize the
+#: caller before they reach the agent, so a principal is required.
+PRINCIPAL = {
+    "user_id": "test-user-1",
+    "organization_id": "test-org-1",
+    "role": "employee",
+}
 
 EXECUTE_URL = "/api/v1/agents/execute"
 
@@ -94,12 +108,21 @@ class FakeAutomationService:
         }
         self._error = error
         self.calls: list[str] = []
+        self.rosters: list[list[dict[str, str]] | None] = []
 
-    def execute(self, instruction: str) -> dict[str, Any]:
+    def execute(
+        self,
+        instruction: str,
+        employees: list[dict[str, str]] | None = None,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return the configured result.
 
         Args:
             instruction: Instruction forwarded by the adapter.
+            employees: Employee records the adapter resolved, or None when the
+                packaged directory is in use.
+            user_context: Principal context forwarded by the adapter.
 
         Returns:
             The configured result.
@@ -108,6 +131,7 @@ class FakeAutomationService:
             Exception: The configured error, when one was set.
         """
         self.calls.append(instruction)
+        self.rosters.append(employees)
         if self._error is not None:
             raise self._error
         return self._result
@@ -185,6 +209,7 @@ def build_client(settings: Settings, adapters: list[Any]) -> AsyncClient:
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: FakePrincipal()  # noqa: E501
 
     return AsyncClient(
         transport=ASGITransport(app=application),  # type: ignore[arg-type]
@@ -200,16 +225,19 @@ def build_client(settings: Settings, adapters: list[Any]) -> AsyncClient:
 async def test_draft_action_returns_expected_dict_shape(
     adapter: AutomationAgentAdapter,
 ) -> None:
-    """A successful draft returns meeting, recipients, and email keys."""
+    """A successful draft returns meeting, recipients, email, and directory keys."""
     result = await adapter.execute(
         "draft_action",
         {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"},
+            user_context=PRINCIPAL,
     )
 
-    assert set(result) == {"meeting", "recipients", "email"}
+    assert set(result) == {"meeting", "recipients", "email", "directory"}
     assert isinstance(result["meeting"], dict)
     assert isinstance(result["recipients"], list)
     assert isinstance(result["email"], str)
+    assert result["directory"]["source"] == "default"
+    assert result["directory"]["directory_id"] is None
 
 
 async def test_draft_action_forwards_the_instruction(
@@ -219,9 +247,10 @@ async def test_draft_action_forwards_the_instruction(
     """The adapter passes the client's ``instruction`` through unchanged."""
     instruction = "Schedule a client meeting on 12 April at 3 PM in Room B"
 
-    await adapter.execute("draft_action", {"instruction": instruction})
+    await adapter.execute("draft_action", {"instruction": instruction}, user_context=PRINCIPAL)
 
     assert service.calls == [instruction]
+    assert service.rosters == [None]
 
 
 async def test_draft_action_returns_a_draft_rather_than_a_sent_receipt(
@@ -232,7 +261,9 @@ async def test_draft_action_returns_a_draft_rather_than_a_sent_receipt(
     A key like ``sent``, ``delivered``, or ``message_id`` would mean the agent
     had contacted a mail server. Drafting is the whole contract here.
     """
-    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"})
+    result = await adapter.execute("draft_action", {"instruction": "Draft a standup invite"},
+        user_context=PRINCIPAL,
+)
 
     forbidden = {"sent", "delivered", "message_id", "smtp_response", "calendar_event_id"}
     assert forbidden.isdisjoint(result.keys())
@@ -260,7 +291,7 @@ async def test_draft_action_without_a_usable_instruction_is_rejected(
 ) -> None:
     """A missing or blank ``instruction`` raises a validation error."""
     with pytest.raises(ValidationFailedError) as exc_info:
-        await adapter.execute("draft_action", payload)
+        await adapter.execute("draft_action", payload, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 422
     assert "instruction" in exc_info.value.message
@@ -272,7 +303,7 @@ async def test_rejected_payload_never_reaches_the_service(
 ) -> None:
     """Validation happens before the service is called at all."""
     with pytest.raises(ValidationFailedError):
-        await adapter.execute("draft_action", {"instruction": ""})
+        await adapter.execute("draft_action", {"instruction": ""}, user_context=PRINCIPAL)
 
     assert service.calls == []
 
@@ -321,7 +352,9 @@ async def test_unavailable_agent_returns_503() -> None:
     adapter = AutomationAgentAdapter()
 
     with pytest.raises(AgentUnavailableError) as exc_info:
-        await adapter.execute("draft_action", {"instruction": "do something"})
+        await adapter.execute("draft_action", {"instruction": "do something"},
+            user_context=PRINCIPAL,
+    )
 
     assert exc_info.value.status_code == 503
 
@@ -337,7 +370,9 @@ async def test_service_failure_becomes_agent_execution_error() -> None:
     adapter = AutomationAgentAdapter(service=service)
 
     with pytest.raises(AgentExecutionError) as exc_info:
-        await adapter.execute("draft_action", {"instruction": "draft an invite"})
+        await adapter.execute("draft_action", {"instruction": "draft an invite"},
+            user_context=PRINCIPAL,
+    )
 
     assert exc_info.value.status_code == 502
     assert "/secret/path" not in exc_info.value.message
@@ -366,7 +401,9 @@ async def test_every_advertised_capability_is_reachable(
 ) -> None:
     """Each advertised capability dispatches instead of raising 404."""
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, {"instruction": "draft an invite"})
+        result = await adapter.execute(operation, {"instruction": "draft an invite"},
+            user_context=PRINCIPAL,
+    )
         assert isinstance(result, dict)
 
 
@@ -377,7 +414,7 @@ async def test_operations_without_an_implementation_are_rejected(
 ) -> None:
     """Previously advertised operations with no implementation now 404."""
     with pytest.raises(UnknownOperationError):
-        await adapter.execute(operation, {"instruction": "do something"})
+        await adapter.execute(operation, {"instruction": "do something"}, user_context=PRINCIPAL)
 
 
 # --------------------------------------------------------------------------
@@ -517,7 +554,12 @@ async def test_api_returns_the_draft_result(settings: Settings) -> None:
     data = response.json()["data"]
     assert data["agent"] == "automation"
     assert data["operation"] == "draft_action"
-    assert set(data["data"]) == {"meeting", "recipients", "email"}
+    assert set(data["data"]) == {"meeting", "recipients", "email", "directory"}
+    assert data["data"]["directory"] == {
+        "directory_id": None,
+        "source": "default",
+        "employee_count": None,
+    }
 
 
 @pytest.mark.parametrize(
@@ -606,7 +648,12 @@ async def test_api_returns_504_when_the_agent_times_out() -> None:
     import time
 
     class SlowAutomationService(FakeAutomationService):
-        def execute(self, instruction: str) -> dict[str, Any]:
+        def execute(
+            self,
+            instruction: str,
+            employees: list[dict[str, str]] | None = None,
+            user_context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             time.sleep(0.5)
             return {"meeting": {}, "recipients": [], "email": "late"}
 

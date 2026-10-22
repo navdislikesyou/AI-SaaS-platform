@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BarChart3,
   Play,
@@ -11,11 +11,22 @@ import {
   Lightbulb,
   Compass,
   FileSpreadsheet,
+  Upload,
+  AlertCircle,
 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import { usePerformanceJob } from '../hooks/usePerformanceJob';
-import { PERFORMANCE_OPERATIONS, performanceService } from '../services/performanceService';
+import { useDatasetUpload } from '../hooks/useDatasetUpload';
+import { usePerformanceDatasets } from '../hooks/usePerformanceDatasets';
+import { useArtifactPreview } from '../hooks/useArtifactPreview';
+import {
+  PERFORMANCE_OPERATIONS,
+  SAMPLE_DATASET_ID,
+  DATASET_UPLOAD_ACCEPT,
+  SUPPORTED_DATASET_LABEL,
+} from '../services/performanceService';
 import AgentExecutionResult from '../components/AgentExecutionResult';
+import FormatInfoBox, { FormatInfoSample } from '../components/FormatInfoBox';
 
 // Exactly the operations the backend job API accepts. No others are implemented.
 const OPERATION_OPTIONS = [
@@ -33,40 +44,117 @@ const STATUS_LABELS = {
   failed: 'Failed',
 };
 
+/**
+ * Render a byte count for display, e.g. "1.8 MB".
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+
+  if (bytes < 1024) return `${bytes} B`;
+
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function PerformanceAIPage() {
   const [activeTab, setActiveTab] = useState('playground');
   const [activeOp, setActiveOp] = useState('compute_kpis');
-  // Left empty on purpose. The backend reads a server-side file path, so the
-  // operator must state it explicitly rather than accept a silent default.
-  const [filePath, setFilePath] = useState('');
+  // A dataset is named by the id the backend issued, never by a path. The
+  // packaged sample is the default so the page is usable before anything is
+  // uploaded, which is also what keeps the previous workflow working.
+  const [selectedDatasetId, setSelectedDatasetId] = useState(SAMPLE_DATASET_ID);
   // Which chart row is open, or null. A single value guarantees only one chart
   // image is mounted at a time, so at most one PNG is fetched at a time.
   const [expandedArtifact, setExpandedArtifact] = useState(null);
-  const [imageErrors, setImageErrors] = useState({});
 
   const { submit, getExecution } = usePerformanceJob();
+
+  const fileInputRef = React.useRef(null);
+
+  const {
+    datasets,
+    failedDatasets,
+    maxUploadBytes,
+    isLoading: datasetsLoading,
+    error: datasetsError,
+    addDataset,
+  } = usePerformanceDatasets();
+
+  const {
+    selectedFile,
+    selectFile,
+    isUploading,
+    uploadedDataset,
+    errorMessage: uploadErrorMessage,
+    upload,
+  } = useDatasetUpload({ maxBytes: maxUploadBytes });
 
   // Read only the selected operation's execution. Each operation owns its own
   // job id, status, result, and error, so switching tabs can never surface
   // another operation's output.
   const { job, jobId, status, result, error, isLoading } = getExecution(activeOp);
 
+  // The chart preview. Charts are fetched through the authenticated API client
+  // rather than pointed at with an image URL, because the artifact endpoint is
+  // scoped to the organization that owns the job.
+  const {
+    artifactUrls,
+    artifactErrors,
+    loadArtifact,
+    markArtifactFailed,
+  } = useArtifactPreview(jobId);
+
+  const selectedDataset = datasets.find((row) => row.dataset_id === selectedDatasetId) || null;
+
   const handleExecute = async (op = activeOp) => {
-    if (!filePath.trim()) return;
+    if (!selectedDatasetId) return;
     if (getExecution(op).isLoading) return;
 
     // A new Charts job invalidates the open chart for Charts only.
     if (op === 'visualize') {
       setExpandedArtifact(null);
-      setImageErrors({});
     }
 
-    await submit(op, filePath.trim());
+    // Only the id travels. The server resolves it to a file it controls, so the
+    // selected dataset is exactly the one the job reads.
+    await submit(op, undefined, selectedDatasetId);
+  };
+
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+
+    // Reset the input so re-picking the identical file still fires onChange.
+    event.target.value = '';
+
+    selectFile(file);
+  };
+
+  const handleUpload = async () => {
+    const dataset = await upload();
+
+    // Only a dataset the backend reports as stored joins the selector, and it
+    // becomes the selection, so the next run analyses what was just uploaded.
+    if (dataset) {
+      addDataset(dataset);
+      setSelectedDatasetId(dataset.dataset_id);
+    }
   };
 
   const toggleArtifact = (filename) => {
     setExpandedArtifact((current) => (current === filename ? null : filename));
   };
+
+  // Fetch the chart that was opened. Only the open chart is fetched, so a list
+  // of thirty-nine charts costs one request rather than thirty-nine.
+  useEffect(() => {
+    if (!expandedArtifact || !jobId) return;
+
+    loadArtifact(expandedArtifact);
+  }, [expandedArtifact, jobId, loadArtifact]);
 
   return (
     <div className="saas-workbench">
@@ -171,20 +259,219 @@ export default function PerformanceAIPage() {
 
                   <div className="saas-card-body">
                     <div className="saas-input-group">
-                      <label className="saas-label">Dataset File Path (server-side)</label>
-                      <input
-                        type="text"
+                      <label className="saas-label" htmlFor="performance-dataset-select">
+                        Dataset to Analyse
+                      </label>
+
+                      <select
+                        id="performance-dataset-select"
                         className="saas-input"
-                        placeholder="performance_agent/data/Financials_standardized.csv"
-                        value={filePath}
-                        onChange={(e) => setFilePath(e.target.value)}
-                        disabled={isLoading}
-                      />
-                      <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', marginTop: '6px', lineHeight: 1.5 }}>
-                        Relative paths resolve from the <code>backend/</code> directory. Supported
-                        formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>. The server
-                        reads the file directly, so it must already exist on disk.
+                        value={selectedDatasetId}
+                        onChange={(e) => setSelectedDatasetId(e.target.value)}
+                        disabled={isLoading || isUploading}
+                      >
+                        {datasets.map((dataset) => (
+                          <option key={dataset.dataset_id} value={dataset.dataset_id}>
+                            {dataset.is_sample
+                              ? `Sample dataset — ${dataset.filename}`
+                              : `${dataset.filename} — ${dataset.column_count} columns`}
+                          </option>
+                        ))}
+                      </select>
+
+                      <div
+                        style={{
+                          fontSize: '0.7rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '6px',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {datasetsLoading
+                          ? 'Loading available datasets...'
+                          : selectedDataset
+                            ? selectedDataset.is_sample
+                              ? `Analysing the packaged sample dataset. Upload your own file below to use your data.`
+                              : `Analysing ${selectedDataset.filename} (${formatBytes(
+                                  selectedDataset.size_bytes
+                                )}, ${selectedDataset.column_count} columns).`
+                            : 'No dataset available. Upload one below.'}
                       </div>
+                    </div>
+
+                    {/* Upload a dataset from this device */}
+                    <div className="saas-input-group">
+                      <label className="saas-label" htmlFor="performance-dataset-input">
+                        Upload Dataset
+                      </label>
+
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '10px',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <input
+                          id="performance-dataset-input"
+                          ref={fileInputRef}
+                          type="file"
+                          className="saas-input"
+                          accept={DATASET_UPLOAD_ACCEPT}
+                          onChange={handleFileChange}
+                          disabled={isUploading}
+                          style={{ flex: '1 1 240px', minWidth: 0 }}
+                        />
+
+                        <button
+                          className="saas-btn"
+                          onClick={handleUpload}
+                          disabled={!selectedFile || isUploading}
+                          style={{
+                            background: 'rgba(255,90,0,0.12)',
+                            color: '#FF5A00',
+                            fontWeight: 600,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <Upload size={14} />
+                          <span>{isUploading ? 'Uploading...' : 'Upload Dataset'}</span>
+                        </button>
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: '0.7rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '6px',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Accepted formats: <code>{SUPPORTED_DATASET_LABEL}</code>, up to{' '}
+                        {maxUploadBytes ? formatBytes(maxUploadBytes) : '25 MB'}. Your file is
+                        stored on the server under a generated name and becomes
+                        selectable immediately.{' '}
+                        {selectedFile ? (
+                          <>
+                            Selected: <strong>{selectedFile.name}</strong>{' '}
+                            ({formatBytes(selectedFile.size)})
+                          </>
+                        ) : (
+                          'No file selected yet.'
+                        )}
+                      </div>
+
+                      {isUploading && (
+                        <div
+                          role="status"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            marginTop: '12px',
+                            padding: '10px 14px',
+                            borderRadius: '6px',
+                            background: 'rgba(255,90,0,0.08)',
+                            border: '1px solid rgba(255,90,0,0.25)',
+                            fontSize: '0.82rem',
+                            color: '#f4f4f5',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              width: '14px',
+                              height: '14px',
+                              borderRadius: '50%',
+                              border: '2px solid rgba(255,90,0,0.3)',
+                              borderTopColor: '#FF5A00',
+                              animation: 'spin 0.8s linear infinite',
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span>
+                            Validating and storing {selectedFile?.name}. The header is
+                            read to confirm the dataset is usable.
+                          </span>
+                        </div>
+                      )}
+
+                      {uploadErrorMessage && !isUploading && (
+                        <div
+                          role="alert"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '10px',
+                            marginTop: '12px',
+                            padding: '12px 14px',
+                            borderRadius: '6px',
+                            background: 'rgba(239,68,68,0.08)',
+                            border: '1px solid rgba(239,68,68,0.3)',
+                            fontSize: '0.82rem',
+                            color: '#fecaca',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <AlertCircle
+                            size={16}
+                            color="#EF4444"
+                            style={{ flexShrink: 0 }}
+                          />
+                          <span>{uploadErrorMessage}</span>
+                        </div>
+                      )}
+
+                      {uploadedDataset && !isUploading && (
+                        <div
+                          role="status"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '10px',
+                            marginTop: '12px',
+                            padding: '12px 14px',
+                            borderRadius: '6px',
+                            background: 'rgba(16,185,129,0.08)',
+                            border: '1px solid rgba(16,185,129,0.25)',
+                            fontSize: '0.82rem',
+                            color: '#a7f3d0',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <CheckCircle2
+                            size={16}
+                            color="#10B981"
+                            style={{ flexShrink: 0 }}
+                          />
+                          <span>
+                            Stored &ldquo;{uploadedDataset.filename}&rdquo; with{' '}
+                            {uploadedDataset.column_count} columns. It is selected
+                            above, so the next run analyses it.
+                          </span>
+                        </div>
+                      )}
+
+                      {datasetsError && (
+                        <div
+                          role="alert"
+                          style={{
+                            marginTop: '12px',
+                            padding: '10px 14px',
+                            borderRadius: '6px',
+                            background: 'rgba(245,158,11,0.08)',
+                            border: '1px solid rgba(245,158,11,0.25)',
+                            fontSize: '0.78rem',
+                            color: '#fcd34d',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          Could not load the dataset list: {datasetsError.message}. You
+                          can still upload a dataset.
+                        </div>
+                      )}
                     </div>
 
                     {jobId && (
@@ -226,7 +513,7 @@ export default function PerformanceAIPage() {
                       <button
                         className="saas-btn"
                         onClick={() => handleExecute(activeOp)}
-                        disabled={!filePath.trim() || isLoading}
+                        disabled={!selectedDatasetId || isLoading || isUploading}
                         style={{ background: '#FF5A00', color: '#fff', fontWeight: 600, flexShrink: 0 }}
                       >
                         <Play size={14} fill="#fff" />
@@ -323,7 +610,7 @@ export default function PerformanceAIPage() {
                                             textAlign: 'center',
                                           }}
                                         >
-                                          {imageErrors[viz.filename] ? (
+                                          {artifactErrors[viz.filename] ? (
                                             <div
                                               style={{
                                                 fontSize: '0.75rem',
@@ -331,21 +618,18 @@ export default function PerformanceAIPage() {
                                                 padding: '16px 0',
                                               }}
                                             >
-                                              Unable to load {viz.filename}.
+                                              {artifactErrors[viz.filename]}
                                             </div>
-                                          ) : (
+                                          ) : artifactUrls[viz.filename] ? (
                                             <img
-                                              src={performanceService.artifactUrl(
-                                                jobId,
-                                                viz.filename,
-                                              )}
+                                              src={artifactUrls[viz.filename]}
                                               alt={`${viz.name} chart`}
                                               loading="lazy"
                                               onError={() =>
-                                                setImageErrors((prev) => ({
-                                                  ...prev,
-                                                  [viz.filename]: true,
-                                                }))
+                                                markArtifactFailed(
+                                                  viz.filename,
+                                                  `This chart could not be displayed.`
+                                                )
                                               }
                                               style={{
                                                 maxWidth: '100%',
@@ -356,6 +640,16 @@ export default function PerformanceAIPage() {
                                                 background: '#fff',
                                               }}
                                             />
+                                          ) : (
+                                            <div
+                                              style={{
+                                                fontSize: '0.75rem',
+                                                color: 'rgba(255,255,255,0.5)',
+                                                padding: '16px 0',
+                                              }}
+                                            >
+                                              Loading {viz.filename}...
+                                            </div>
                                           )}
                                         </div>
                                       </td>
@@ -424,28 +718,175 @@ export default function PerformanceAIPage() {
 
               <div className="saas-card-body" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.75)', lineHeight: 1.7 }}>
                 <p style={{ marginBottom: '14px' }}>
-                  The Performance Analyzer reads datasets from the server filesystem. There is no
-                  upload endpoint, so a dataset must already exist on disk before a job can read it.
+                  Upload a dataset from this device in the{' '}
+                  <strong>Metrics &amp; Trends</strong> tab. The file is validated
+                  on the server, stored under a generated name, and then appears in
+                  the dataset selector next to the packaged sample.
                 </p>
 
-                <div className="saas-input-group" style={{ marginBottom: '16px' }}>
-                  <label className="saas-label">File Path (server-side)</label>
-                  <input
-                    type="text"
-                    className="saas-input"
-                    placeholder="performance_agent/data/Financials_standardized.csv"
-                    value={filePath}
-                    onChange={(e) => setFilePath(e.target.value)}
-                    disabled={isLoading}
-                  />
-                </div>
+                <FormatInfoBox
+                  title="Dataset format"
+                  accent="#FF5A00"
+                  accentRgb="255, 90, 0"
+                  examples={[
+                    {
+                      label: 'Example header row',
+                      content: (
+                        <div>
+                          <FormatInfoSample label="Financials.csv — header only">
+                            {`date,sales,profit,units_sold,sales_target,profit_target,employee_id,employee_name,department,product,region,customer_segment,sales_channel`}
+                          </FormatInfoSample>
+                          <p
+                            style={{
+                              margin: '8px 0 0',
+                              fontSize: '0.7rem',
+                              color: 'rgba(255,255,255,0.5)',
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            The packaged sample dataset adds year, month, company,
+                            business unit, employee role, manager, customer id,
+                            country, product id, product category, unit price,
+                            gross sales, discount, and cogs &mdash; enough for
+                            every operation this assistant supports.
+                          </p>
+                        </div>
+                      ),
+                    },
+                  ]}
+                >
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    A <code>.csv</code> or <code>.xlsx</code> file, at most{' '}
+                    {maxUploadBytes ? formatBytes(maxUploadBytes) : '25 MB'}. Legacy{' '}
+                    <code>.xls</code> workbooks are refused rather than accepted and
+                    failing later, so re-save yours as <code>.xlsx</code> or CSV.
+                  </p>
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    A readable header row. Only the first worksheet of a workbook is
+                    read, so split additional sheets into their own file if you need
+                    them. Header names are trimmed and lowercased with spaces turned
+                    into underscores, so <code>Sales Channel</code> is read as{' '}
+                    <code>sales_channel</code>. After upload the selector shows the
+                    column names the server actually found.
+                  </p>
+                  <p>
+                    <span className="saas-info-req">Required</span>
+                    Columns are not uniform across operations. <code>compare_periods</code>{' '}
+                    insists on a <code>date</code> column and fails the job without
+                    it, and <code>analyze</code> needs <code>date</code> for its
+                    time section. <code>compute_kpis</code> does not reject a missing
+                    column, but it needs <code>sales</code> and <code>profit</code>{' '}
+                    to report anything. Watch for one interaction: if{' '}
+                    <code>employee_name</code> is present, keep{' '}
+                    <code>sales_target</code> and <code>profit_target</code> too, or
+                    the company analysis stops with an error. <code>load_dataset</code>{' '}
+                    only describes the file, and <code>visualize</code> draws each
+                    chart only if that chart&apos;s columns are present.
+                  </p>
+                  <p>
+                    <span className="saas-info-opt">Optional</span>
+                    These add analysis rather than unlocking it:{' '}
+                    <code>units_sold</code>, <code>gross_sales</code>,{' '}
+                    <code>discount</code>, <code>cogs</code>, and the dimension
+                    columns <code>employee_id</code>, <code>department</code>,{' '}
+                    <code>product</code>, <code>region</code>, <code>country</code>,{' '}
+                    <code>customer_id</code>, <code>customer_name</code>,{' '}
+                    <code>customer_segment</code>, <code>sales_channel</code>. Each
+                    section is produced only when its own columns are all present,
+                    and a section with missing columns is left out rather than
+                    guessed.
+                  </p>
+                  <p className="saas-info-note">
+                    Uploads are kept on the server this page is talking to. They are
+                    not shared between deployments, and they are not removed
+                    automatically.
+                  </p>
+                </FormatInfoBox>
 
                 <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.6)' }}>
-                  <div style={{ marginBottom: '8px' }}>Example paths shipped with the repository:</div>
-                  <ul style={{ margin: 0, paddingLeft: '18px', fontFamily: 'JetBrains Mono', fontSize: '0.75rem' }}>
-                    <li>performance_agent/data/Financials_standardized.csv</li>
-                    <li>performance_agent/data/Financials.csv</li>
-                  </ul>
+                  <div style={{ marginBottom: '8px' }}>
+                    Datasets available on this server:
+                  </div>
+                  <table className="saas-table">
+                    <thead>
+                      <tr>
+                        <th>Dataset</th>
+                        <th>Format</th>
+                        <th>Size</th>
+                        <th>Columns</th>
+                        <th>Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {datasets.map((dataset) => (
+                        <tr
+                          key={dataset.dataset_id}
+                          style={
+                            dataset.dataset_id === selectedDatasetId
+                              ? { background: 'rgba(255,90,0,0.06)' }
+                              : undefined
+                          }
+                        >
+                          <td style={{ fontWeight: 500, color: '#fafafa' }}>
+                            {dataset.filename}
+                          </td>
+                          <td style={{ fontFamily: 'JetBrains Mono' }}>
+                            {dataset.format}
+                          </td>
+                          <td style={{ fontFamily: 'JetBrains Mono' }}>
+                            {formatBytes(dataset.size_bytes)}
+                          </td>
+                          <td style={{ fontFamily: 'JetBrains Mono' }}>
+                            {dataset.is_sample ? '—' : dataset.column_count}
+                          </td>
+                          <td>
+                            <span
+                              style={{
+                                fontFamily: 'JetBrains Mono',
+                                fontSize: '0.65rem',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(255,90,0,0.1)',
+                                color: '#FF5A00',
+                                border: '1px solid rgba(255,90,0,0.25)',
+                              }}
+                            >
+                              {dataset.is_sample ? 'Packaged sample' : 'Uploaded'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {datasets.length === 1 && (
+                    <div style={{ marginTop: '10px', fontSize: '0.72rem', color: 'rgba(255,255,255,0.45)' }}>
+                      Only the packaged sample so far. Upload a dataset in Metrics &amp;
+                      Trends to analyse your own data.
+                    </div>
+                  )}
+
+                  {failedDatasets.length > 0 && (
+                    <div
+                      role="alert"
+                      style={{
+                        marginTop: '12px',
+                        padding: '10px 14px',
+                        borderRadius: '6px',
+                        background: 'rgba(239,68,68,0.08)',
+                        border: '1px solid rgba(239,68,68,0.3)',
+                        fontSize: '0.78rem',
+                        color: '#fecaca',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {failedDatasets.length} dataset
+                      {failedDatasets.length === 1 ? ' was' : 's were'} rejected and
+                      cannot be selected.
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ marginTop: '16px', fontSize: '0.78rem', color: 'rgba(255,255,255,0.6)' }}>
@@ -552,7 +993,7 @@ export default function PerformanceAIPage() {
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(255,90,0,0.15)', color: '#FF5A00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>
                         2
                       </span>
-                      <span>Enter the server-side path of an existing dataset, for example <em>performance_agent/data/Financials_standardized.csv</em>.</span>
+                      <span>Choose the dataset to analyse in <strong>Dataset to Analyse</strong>. The packaged sample is selected by default; upload a <code>.csv</code> or <code>.xlsx</code> file below and it is selected for you.</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                       <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(255,90,0,0.15)', color: '#FF5A00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>

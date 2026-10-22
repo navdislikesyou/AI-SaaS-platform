@@ -100,6 +100,8 @@ class Job:
         result: Operation payload, once completed.
         error: Sanitized failure text, once failed.
         request_id: Correlation id of the creating request.
+        organization_id: The organisation owning this job.
+        owner_id: The user who created this job.
     """
 
     job_id: str
@@ -112,6 +114,8 @@ class Job:
     result: dict[str, Any] | None = None
     error: str | None = None
     request_id: str | None = None
+    organization_id: str | None = None
+    owner_id: str | None = None
 
     def to_status_response(self) -> dict[str, Any]:
         """Render the job as a client-facing payload.
@@ -167,17 +171,27 @@ class JobManager:
         """
         return self._jobs.get(job_id)
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, organization_id: str | None = None) -> list[Job]:
         """Return every tracked job, newest first.
 
+        Args:
+            organization_id: If provided, only return jobs belonging to this
+                organisation.
+
         Returns:
-            All known jobs ordered by creation time descending.
+            All known jobs ordered by creation time descending, filtered by
+            organisation when specified.
         """
-        return sorted(
+        jobs = sorted(
             self._jobs.values(),
             key=lambda job: job.created_at,
             reverse=True,
         )
+
+        if organization_id is not None:
+            jobs = [job for job in jobs if job.organization_id == organization_id]
+
+        return jobs
 
     def clear(self) -> None:
         """Drop all tracked jobs. Intended for test isolation."""
@@ -256,6 +270,8 @@ class JobManager:
         operation: str,
         file_path: str,
         request_id: str | None = None,
+        organization_id: str | None = None,
+        owner_id: str | None = None,
     ) -> Job:
         """Create a job and start it in the background.
 
@@ -266,6 +282,8 @@ class JobManager:
             operation: The operation to run.
             file_path: Server-side dataset path.
             request_id: Correlation id of the creating request.
+            organization_id: The organisation owning this job.
+            owner_id: The user who created this job.
 
         Returns:
             The created job, in ``queued`` state.
@@ -282,6 +300,8 @@ class JobManager:
             operation=operation,
             file_path=file_path,
             request_id=request_id or new_request_id(),
+            organization_id=organization_id,
+            owner_id=owner_id,
         )
 
         self._jobs[job.job_id] = job
@@ -375,6 +395,11 @@ class JobManager:
         if job.operation == "load_dataset":
             payload = service.load_dataset(str(path))
             payload.pop("output_dir", None)
+            # The service reports the path it read. Reduce it to a bare filename:
+            # an uploaded dataset lives under the upload directory, so returning
+            # the path as given would disclose the server's directory layout to
+            # any client that can run the operation.
+            payload["file_path"] = path.name
             return payload
 
         df = self._load_frame(path)
@@ -622,7 +647,7 @@ class JobManager:
         return load_clean_dataset(path)
 
     def _resolve_path(self, file_path: str) -> Path:
-        """Resolve a client-supplied dataset path against the backend root.
+        """Resolve a dataset path against the backend root.
 
         Relative paths resolve from the backend directory rather than the
         process working directory, matching how agent paths are configured.

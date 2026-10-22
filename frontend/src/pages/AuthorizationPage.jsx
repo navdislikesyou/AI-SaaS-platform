@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
+import { roleLabel } from '../context/authRoles';
 
 const AUTH_STEPS = [
   { id: 'identity', label: 'IDENTITY VERIFIED', detail: 'Cryptographic token validated' },
@@ -139,12 +140,12 @@ export default function AuthorizationPage() {
             <span className="authz-meta-sep">·</span>
             <span className="authz-meta-item">
               <span className="authz-meta-key">Access</span>
-              <span className="authz-meta-value">{user?.accessLevel}</span>
+              <span className="authz-meta-value">{roleLabel(user?.role)}</span>
             </span>
             <span className="authz-meta-sep">·</span>
             <span className="authz-meta-item">
               <span className="authz-meta-key">Organization</span>
-              <span className="authz-meta-value">{user?.organization}</span>
+              <span className="authz-meta-value">{user?.organizationId || '—'}</span>
             </span>
           </div>
         </motion.div>

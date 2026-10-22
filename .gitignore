@@ -17,6 +17,26 @@ venv/
 
 # Environment variables
 .env
+.env.*
+# Templates are tracked; the real files never are.
+!.env.example
+!.env.*.example
+
+# Local SQLite databases (the default DATABASE_URL points at ./app.db)
+*.db
+
+# Generated test and lint output written into the backend directory.
+# The requirements manifests are source files and stay tracked.
+backend/*.txt
+!backend/requirements.txt
+!backend/requirements-agents.txt
+
+# Coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+frontend/coverage/
 
 # Uploaded files
 backend/uploads/

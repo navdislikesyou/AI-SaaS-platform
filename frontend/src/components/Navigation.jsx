@@ -11,24 +11,24 @@ import {
   Users,
   Settings,
   LogOut,
-  ChevronDown,
   Menu,
   X,
   Radio,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { roleLabel } from '../context/authRoles';
 import { useSystemHealth } from '../hooks/useSystemHealth';
 
 export default function Navigation() {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
   const { isOnline, health } = useSystemHealth();
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login', { replace: true });
   };
 
   const navSections = [
@@ -51,7 +51,9 @@ export default function Navigation() {
       title: 'Organization',
       items: [
         { label: 'Activity History', href: '/insights', icon: Activity },
-        { label: 'Team Directory', href: '/organization', icon: Users },
+        // User management is an organization-admin capability. Hiding it for
+        // other roles keeps the UI honest about what the backend allows.
+        ...(isAdmin ? [{ label: 'Team Directory', href: '/organization', icon: Users }] : []),
         { label: 'Preferences', href: '/settings', icon: Settings },
       ],
     },
@@ -74,9 +76,8 @@ export default function Navigation() {
       <div className="saas-workspace-pill">
         <div className="saas-workspace-name">
           <div className="saas-workspace-dot" />
-          <span>{user?.organization || 'Enterprise Org'}</span>
+          <span>{user?.organizationId || 'Your organization'}</span>
         </div>
-        <ChevronDown size={14} opacity={0.5} />
       </div>
 
       {/* Navigation Scroll */}
@@ -134,8 +135,8 @@ export default function Navigation() {
           <div className="saas-user-info">
             <div className="saas-user-avatar">{user?.avatar || 'US'}</div>
             <div className="saas-user-details">
-              <span className="saas-user-name">{user?.name || 'Administrator'}</span>
-              <span className="saas-user-role">{user?.role || 'Organization Owner'}</span>
+              <span className="saas-user-name">{user?.name || 'Signed in'}</span>
+              <span className="saas-user-role">{roleLabel(user?.role)}</span>
             </div>
           </div>
           <button className="saas-signout-btn" onClick={handleLogout} title="Sign Out">

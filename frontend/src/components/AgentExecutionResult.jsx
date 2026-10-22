@@ -68,6 +68,11 @@ export default function AgentExecutionResult({
 
   const isUnavailable = executionMeta?.isUnavailable || error?.status === 503;
 
+  // A failed request must not be dressed as a success. `executionMeta` is set on
+  // the error path too, so without this the green header below would sit above
+  // an error message and read as a completed result.
+  const failed = Boolean(error) && !response;
+
   return (
     <motion.div
       className="execution-result-card"
@@ -101,14 +106,14 @@ export default function AgentExecutionResult({
               gap: '6px',
               padding: '4px 10px',
               borderRadius: '20px',
-              background: 'rgba(16, 185, 129, 0.12)',
-              color: '#10B981',
+              background: failed ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+              color: failed ? '#EF4444' : '#10B981',
               fontSize: '0.75rem',
               fontWeight: '600',
             }}
           >
-            <CheckCircle2 size={13} />
-            <span>Assistant Response Ready</span>
+            {failed ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
+            <span>{failed ? 'Request Failed' : 'Assistant Response Ready'}</span>
           </div>
 
           <span
@@ -202,11 +207,13 @@ export default function AgentExecutionResult({
           </div>
         ) : (
           <div
+            role="alert"
             style={{
               padding: '18px',
               borderRadius: '8px',
-              background: 'rgba(255, 255, 255, 0.03)',
-              color: 'rgba(255, 255, 255, 0.8)',
+              background: failed ? 'rgba(239, 68, 68, 0.08)' : 'rgba(255, 255, 255, 0.03)',
+              border: failed ? '1px solid rgba(239, 68, 68, 0.3)' : 'none',
+              color: failed ? '#fecaca' : 'rgba(255, 255, 255, 0.8)',
               fontSize: '0.9rem',
               lineHeight: 1.6,
             }}

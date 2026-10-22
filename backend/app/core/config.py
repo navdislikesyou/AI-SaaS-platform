@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "staging", "production"]
@@ -44,6 +44,56 @@ class Settings(BaseSettings):
         knowledge_chroma_path: Directory backing the Knowledge Agent vector
             store. Relative paths resolve from the backend directory.
         knowledge_embedding_model: HuggingFace embedding model identifier.
+        knowledge_upload_dir: Directory holding documents uploaded through the
+            Knowledge document API. Relative paths resolve from the backend
+            directory. Local disk is a development-MVP choice; a deployment
+            needs persistent, shared storage.
+        knowledge_upload_manifest_path: JSON manifest recording the metadata of
+            each uploaded document. Holds no document contents and no vectors.
+        knowledge_max_upload_bytes: Largest accepted upload, enforced while
+            streaming so an oversized file is never fully buffered.
+        automation_upload_dir: Directory holding employee directories uploaded
+            through the Automation directory API. Relative paths resolve from
+            the backend directory. Local disk is a development-MVP choice, for
+            the same reasons as the Knowledge upload directory.
+        automation_upload_manifest_path: JSON manifest recording the metadata of
+            each uploaded employee directory. Holds no employee records; those
+            live in the upload directory.
+        automation_max_upload_bytes: Largest accepted employee directory upload.
+            These are small text files, so the limit is far lower than the
+            Knowledge document limit.
+        automation_max_directory_employees: Largest accepted employee count in
+            one directory. Bounds the work a single draft can do and the memory
+            one request may use.
+        performance_upload_dir: Directory holding datasets uploaded through the
+            Performance dataset API. Relative paths resolve from the backend
+            directory. Local disk is a development-MVP choice, for the same
+            reasons as the Knowledge upload directory: uploaded datasets are not
+            shared between instances and a deployment needs persistent, shared
+            storage.
+        performance_upload_manifest_path: JSON manifest recording the metadata of
+            each uploaded dataset. Holds no dataset contents.
+        performance_max_upload_bytes: Largest accepted dataset upload, enforced
+            while streaming so an oversized file is never fully buffered. Matches
+            the Knowledge limit rather than the Automation one: the Performance
+            Analyzer loads a dataset into a DataFrame in memory, so the limit is
+            about parser memory, not about the file being large.
+        performance_sample_dataset_path: Backend-relative path of the dataset
+            shipped with the Performance Analyzer, exposed to clients under the
+            reserved id ``sample``. This is the one dataset a browser client can
+            reach without uploading anything, and it is resolved here on the
+            server so no client ever supplies a filesystem path.
+        DATABASE_URL: Connection string for the application database.
+            SQLite ``sqlite:///./app.db`` for local development; configurable
+            to ``postgresql://user:password@host:port/db`` for production.
+            Read at application startup to initialise Alembic and the
+            async session factory.
+        jwt_access_token_expire_minutes: Lifetime of an access token, in
+            minutes. The expiry is written into the token as the ``exp``
+            claim and enforced when the token is verified, so a token that
+            was copied out of the browser stops working after this long even
+            if it was never revoked. The refresh token is the long-lived
+            credential that renews it.
         ollama_base_url: Base URL of the local Ollama server.
         ollama_model: Ollama model tag used for generation.
         knowledge_agent_timeout_seconds: Wall-clock budget for one Knowledge
@@ -89,6 +139,34 @@ class Settings(BaseSettings):
     knowledge_chroma_path: Path = Path("knowledge_agent/data/chroma_db")
     knowledge_embedding_model: str = "BAAI/bge-base-en-v1.5"
 
+    knowledge_upload_dir: Path = Path("uploads/knowledge")
+    knowledge_upload_manifest_path: Path = Path("uploads/knowledge/documents.json")
+    knowledge_max_upload_bytes: int = 25 * 1024 * 1024
+
+    automation_upload_dir: Path = Path("uploads/automation")
+    automation_upload_manifest_path: Path = Path("uploads/automation/directories.json")
+    automation_max_upload_bytes: int = 2 * 1024 * 1024
+    automation_max_directory_employees: int = 5000
+
+    performance_upload_dir: Path = Path("uploads/performance")
+    performance_upload_manifest_path: Path = Path("uploads/performance/datasets.json")
+    performance_max_upload_bytes: int = 25 * 1024 * 1024
+    performance_sample_dataset_path: Path = Path(
+        "performance_agent/data/Financials_standardized.csv"
+    )
+
+    database_url: str = "sqlite:///./app.db"
+    jwt_secret_key: str = ""
+    jwt_access_token_expire_minutes: int = Field(default=15, gt=0)
+    samesite: Literal["lax", "strict", "none"] = "lax"
+    trusted_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
+    @model_validator(mode="after")
+    def _validate_jwt_secret(self) -> Settings:
+        if self.is_production and not self.jwt_secret_key:
+            raise ValueError("JWT_SECRET_KEY must be set when ENVIRONMENT=production.")
+        return self
+
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
 
@@ -119,6 +197,81 @@ class Settings(BaseSettings):
         """
         path = self.knowledge_chroma_path
         return path if path.is_absolute() else self.backend_dir / path
+
+    def resolve_upload_path(self, path: Path) -> Path:
+        """Resolve a configured path against the backend directory.
+
+        Args:
+            path: A configured path, absolute or backend-relative.
+
+        Returns:
+            An absolute path that does not depend on the process working
+            directory.
+        """
+        return path if path.is_absolute() else self.backend_dir / path
+
+    @property
+    def resolved_knowledge_upload_dir(self) -> Path:
+        """Return the directory that stores uploaded knowledge documents.
+
+        Returns:
+            An absolute path to the upload directory.
+        """
+        return self.resolve_upload_path(self.knowledge_upload_dir)
+
+    @property
+    def resolved_knowledge_upload_manifest_path(self) -> Path:
+        """Return the document manifest file path.
+
+        Returns:
+            An absolute path to the JSON manifest.
+        """
+        return self.resolve_upload_path(self.knowledge_upload_manifest_path)
+
+    @property
+    def resolved_automation_upload_dir(self) -> Path:
+        """Return the directory that stores uploaded employee directories.
+
+        Returns:
+            An absolute path to the upload directory.
+        """
+        return self.resolve_upload_path(self.automation_upload_dir)
+
+    @property
+    def resolved_automation_upload_manifest_path(self) -> Path:
+        """Return the employee directory manifest file path.
+
+        Returns:
+            An absolute path to the JSON manifest.
+        """
+        return self.resolve_upload_path(self.automation_upload_manifest_path)
+
+    @property
+    def resolved_performance_upload_dir(self) -> Path:
+        """Return the directory that stores uploaded performance datasets.
+
+        Returns:
+            An absolute path to the upload directory.
+        """
+        return self.resolve_upload_path(self.performance_upload_dir)
+
+    @property
+    def resolved_performance_upload_manifest_path(self) -> Path:
+        """Return the performance dataset manifest file path.
+
+        Returns:
+            An absolute path to the JSON manifest.
+        """
+        return self.resolve_upload_path(self.performance_upload_manifest_path)
+
+    @property
+    def resolved_performance_sample_dataset_path(self) -> Path:
+        """Return the packaged sample dataset path.
+
+        Returns:
+            An absolute path to the CSV shipped inside the agent package.
+        """
+        return self.resolve_upload_path(self.performance_sample_dataset_path)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

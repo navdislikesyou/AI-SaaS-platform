@@ -15,11 +15,18 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_job_manager, get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_job_manager,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.main import create_app
 from app.services.job_manager import JobManager
 from app.services.orchestrator import Orchestrator
+from tests.fakes import FakePrincipal
 
 # A minimal but structurally valid PNG.
 PNG_BYTES = (
@@ -31,6 +38,12 @@ PNG_BYTES = (
 
 ARTIFACTS_URL = "/api/v1/performance/jobs/{job_id}/artifacts/{filename}"
 SECRET_PATH = "C:/Users/someone/secret/Financials.xlsx"
+
+#: The organisation that owns the job in the authenticated tests.
+ORG_A = "test-org-a"
+
+#: A different organisation, used to prove the isolation.
+ORG_B = "test-org-b"
 
 
 class StubService:
@@ -103,8 +116,15 @@ def settings() -> Settings:
     )
 
 
-def build_client(settings: Settings) -> AsyncClient:
-    """Build a client over a fresh job manager."""
+def build_client(settings: Settings, principal: Any = None) -> AsyncClient:
+    """Build a client over a fresh job manager.
+
+    Args:
+        settings: Test settings.
+        principal: The principal the requests are made as, or None for an
+            anonymous caller. A callable is resolved on every request, so a test
+            can change tenants, or drop the token, between two requests.
+    """
     registry = AgentRegistry()
     manager = JobManager(service_factory=StubService)
 
@@ -113,6 +133,9 @@ def build_client(settings: Settings) -> AsyncClient:
     app.dependency_overrides[get_settings_dep] = lambda: settings
     app.dependency_overrides[get_registry] = lambda: registry
     app.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    app.dependency_overrides[get_current_user_from_token_optional_principal] = (
+        lambda: principal() if callable(principal) else principal
+    )
     app.dependency_overrides[get_job_manager] = lambda: manager
 
     return AsyncClient(
@@ -348,3 +371,120 @@ async def test_artifact_of_a_non_visualize_job_is_404(settings: Settings) -> Non
         )
 
     assert response.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# A job that belongs to an organisation
+#
+# A chart of an organisation-owned job is only served to that organisation.
+# This is what makes the artifact endpoint unusable from a plain image
+# element: an <img src> request carries no bearer token, so it arrives
+# anonymous and is refused. The client therefore has to fetch the chart
+# through the authenticated API client.
+# --------------------------------------------------------------------------
+
+
+async def test_an_owned_artifact_is_served_to_its_organization(
+    settings: Settings,
+) -> None:
+    """The owning organization gets the PNG with an image media type."""
+    principal = FakePrincipal(user_id="user-a", organization_id=ORG_A)
+
+    async with build_client(settings, principal) as client:
+        job_id, filenames = await run_visualize_job(client)
+
+        assert "channel_profit.png" in filenames
+
+        response = await client.get(
+            ARTIFACTS_URL.format(job_id=job_id, filename="channel_profit.png")
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == PNG_BYTES
+
+
+async def test_an_owned_artifact_is_refused_to_an_anonymous_caller(
+    settings: Settings,
+) -> None:
+    """The same chart is refused when the request carries no token.
+
+    This is the request a browser makes when an <img> element points straight
+    at the endpoint, which is why the client fetches the chart instead.
+    """
+    principal = FakePrincipal(user_id="user-a", organization_id=ORG_A)
+    anonymous = False
+
+    def current_principal() -> Any:
+        """Return the principal the next request is made as."""
+        return None if anonymous else principal
+
+    async with build_client(settings, current_principal) as client:
+        job_id, _ = await run_visualize_job(client)
+
+        anonymous = True
+
+        response = await client.get(
+            ARTIFACTS_URL.format(job_id=job_id, filename="channel_profit.png")
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+async def test_an_owned_artifact_is_refused_to_another_organization(
+    settings: Settings,
+) -> None:
+    """A chart belonging to one organization is not served to another."""
+    principal = FakePrincipal(user_id="user-a", organization_id=ORG_A)
+
+    async with build_client(settings, principal) as client:
+        job_id, _ = await run_visualize_job(client)
+
+        principal.organization_id = ORG_B
+
+        response = await client.get(
+            ARTIFACTS_URL.format(job_id=job_id, filename="channel_profit.png")
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+async def test_a_missing_artifact_of_an_owned_job_returns_404(
+    settings: Settings,
+) -> None:
+    """A chart the job never generated is refused even to its owner."""
+    principal = FakePrincipal(user_id="user-a", organization_id=ORG_A)
+
+    async with build_client(settings, principal) as client:
+        job_id, _ = await run_visualize_job(client)
+
+        response = await client.get(ARTIFACTS_URL.format(job_id=job_id, filename="not_a_chart.png"))
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        pytest.param("../secret.txt", id="parent_traversal"),
+        pytest.param("subdir/../../secret.txt", id="nested_traversal"),
+        pytest.param("..\\secret.txt", id="windows_traversal"),
+    ],
+)
+async def test_an_owned_job_still_refuses_traversal(
+    settings: Settings,
+    filename: str,
+) -> None:
+    """The path confinement is unchanged for a job that belongs to a tenant."""
+    principal = FakePrincipal(user_id="user-a", organization_id=ORG_A)
+
+    async with build_client(settings, principal) as client:
+        job_id, _ = await run_visualize_job(client)
+
+        response = await client.get(ARTIFACTS_URL.format(job_id=job_id, filename=filename))
+
+    assert response.status_code == 404
+    assert SECRET_PATH not in response.text

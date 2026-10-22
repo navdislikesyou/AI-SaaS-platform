@@ -16,7 +16,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.main import create_app
 from app.services import activity_store
@@ -58,6 +63,12 @@ def settings() -> Settings:
     return Settings(environment="test", log_level="WARNING", _env_file=None)
 
 
+class _TestUser:
+    def __init__(self, **kwargs: object) -> None:
+        self.id = "test-user-1"
+        self.organization_id = "test-org-1"
+
+
 def build_client(settings: Settings, job_manager: JobManager | None = None) -> AsyncClient:
     """Build an HTTP client with the history store already swapped in.
 
@@ -75,6 +86,12 @@ def build_client(settings: Settings, job_manager: JobManager | None = None) -> A
     app.dependency_overrides[get_settings_dep] = lambda: settings
     app.dependency_overrides[get_registry] = lambda: registry
     app.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    # Provide a test user so that activity-history and other endpoints that
+    # depend on ``get_current_user_from_token_optional_principal`` receive a
+    # scoped user rather than ``None``.
+    app.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: _TestUser(  # noqa: E501
+        id="test-user-1", organization_id="test-org-1"
+    )
 
     if job_manager is not None:
         from app.api.deps import get_job_manager
@@ -276,6 +293,8 @@ def test_stored_record_keys_are_minimal(history_file: Path) -> None:
         "status",
         "timestamp",
         "duration_ms",
+        "user_id",
+        "organization_id",
     }
 
 
@@ -320,6 +339,8 @@ async def drive_job(settings: Settings, manager: JobManager) -> str:
     job = manager.submit(
         operation="visualize",
         file_path="performance_agent/data/Financials_standardized.csv",
+        organization_id=_TestUser().organization_id,
+        owner_id=_TestUser().id,
     )
 
     for _ in range(500):
@@ -440,7 +461,10 @@ async def test_history_endpoint_returns_records(
 ) -> None:
     """The endpoint returns stored records newest first."""
     for _ in range(3):
-        activity_store.record_operation("knowledge", "query", "completed")
+        activity_store.record_operation(
+            "knowledge", "query", "completed",
+            user_id="test-user-1", organization_id="test-org-1",
+        )
 
     async with build_client(settings) as client:
         response = await client.get(HISTORY_URL)

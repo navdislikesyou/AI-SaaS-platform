@@ -180,6 +180,7 @@ app/
 │       ├── router.py    aggregates v1 routers
 │       ├── health.py    /health, /ready
 │       ├── agents.py    /agents, /agents/{name}, /agents/execute
+│       ├── knowledge.py /knowledge/documents (multipart upload + list)
 │       └── performance.py  /performance/jobs, /performance/jobs/{job_id}
 ├── core/
 │   ├── config.py        pydantic-settings, no os.environ elsewhere
@@ -189,6 +190,8 @@ app/
 ├── schemas/
 │   ├── common.py        APIResponse, ErrorDetail, health, readiness
 │   ├── agent.py         agent info, execute request/response
+│   ├── knowledge.py     uploaded document models
+│   ├── automation.py    uploaded employee directory models
 │   └── performance.py   job request/response, job status enum
 ├── agents/
 │   ├── base.py          AgentAdapter ABC, concurrency limiting, placeholder base
@@ -197,6 +200,9 @@ app/
 │   └── adapters/        knowledge, automation, performance
 └── services/
     ├── orchestrator.py  dispatch only
+    ├── document_upload.py  validates uploads, writes them under generated names
+    ├── document_manifest.py  JSON metadata for uploaded documents
+    ├── employee_directory.py  validates employee directories, resolves them
     └── job_manager.py   in-process background jobs for Performance
 ```
 
@@ -366,14 +372,322 @@ the API boundary:
 }
 ```
 
+### `POST /api/v1/knowledge/documents`
+
+Upload a document and index it into the Knowledge vector store. `multipart/form-data`
+with a single `file` field. Accepts **PDF, DOCX, TXT**.
+
+Returns **201 Created** only after the document has been extracted, chunked,
+embedded, and added to Chroma:
+
+```json
+{
+  "success": true,
+  "data": {
+    "document": {
+      "document_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41",
+      "filename": "Employee Handbook.pdf",
+      "extension": ".pdf",
+      "size_bytes": 1843200,
+      "status": "indexed",
+      "chunk_count": 142,
+      "uploaded_at": "2026-10-13T14:22:01+05:30"
+    },
+    "message": "'Employee Handbook.pdf' indexed as 142 chunks."
+  },
+  "message": null,
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+No filesystem path appears in the response. The stored filename is internal and
+is never returned.
+
+Validation happens in three layers, because each catches a different lie:
+
+| Check | Rejects with |
+|---|---|
+| Extension allowlist (`.pdf`, `.docx`, `.txt`) | 422 `VALIDATION_ERROR` |
+| Size limit, enforced while streaming | 422 with `details.max_bytes` |
+| Content signature and structure | 422 `VALIDATION_ERROR` |
+| Zero bytes, or text with no content | 422 `VALIDATION_ERROR` |
+
+The stored filename is generated server-side as `<uuid4>_<sanitized stem><ext>`
+and opened with `O_EXCL`, so a client cannot choose where a file lands, cannot
+traverse out of the upload directory, and cannot overwrite an earlier upload.
+
+If ingestion fails, the stored file is deleted and the document is recorded in
+the manifest with `"status": "failed"` rather than `"indexed"`. A failed upload
+is never reported as a success, and never appears as a selectable document.
+
+Status codes: 201 indexed, 422 rejected or produced no indexable text, 502 agent
+failed, 503 Knowledge Agent not connected, 504 indexing timed out.
+
+### `GET /api/v1/knowledge/documents`
+
+List documents this instance has ingested, newest first. An empty manifest
+returns an empty list rather than an error.
+
+### Upload storage is a local MVP
+
+Uploaded files live in `KNOWLEDGE_UPLOAD_DIR` on the machine running the API,
+and metadata lives in a JSON manifest beside them. Both are gitignored. This is
+a deliberate development choice, **not** deployment-ready storage:
+
+- Files are not shared between instances, so a multi-worker or multi-host
+  deployment will index a document on one instance and not find it on another.
+- Storage is bounded only by disk. There is no quota, no retention policy, and
+  no cleanup job.
+- The manifest is a single JSON file, so concurrent writes across processes are
+  not safe.
+
+A deployment needs persistent shared storage (object storage or a volume) and a
+real metadata store. Only `app/services/document_upload.py` and
+`app/services/document_manifest.py` need to change; the router and the agent
+pipeline do not, because the agent only ever sees a path.
+
+There is **no delete operation**. A document can be uploaded and listed, but
+nothing removes it from disk or from Chroma. Do not describe a document as
+deleted or removed unless that endpoint is implemented.
+
+### `POST /api/v1/automation/directories`
+
+Upload an employee directory and validate every record. `multipart/form-data`
+with a single `file` field. Accepts **JSON** and **CSV**.
+
+Returns **201 Created** only after every record passed validation, and includes a
+preview of the first 20 employees so the upload can be confirmed before use:
+
+```json
+{
+  "success": true,
+  "data": {
+    "directory": {
+      "directory_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41",
+      "filename": "engineering_roster.csv",
+      "format": "csv",
+      "employee_count": 42,
+      "size_bytes": 1843,
+      "status": "ready",
+      "uploaded_at": "2026-10-16T14:22:01+05:30"
+    },
+    "preview": [{ "name": "Aarti Rao", "email": "aarti.rao@example.com" }],
+    "message": "'engineering_roster.csv' accepted with 42 employee(s)."
+  },
+  "message": null,
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+**Formats.** JSON must be an array of objects. CSV needs a header row; column
+names are matched case-insensitively and a UTF-8 BOM is stripped, so a sheet
+exported from a spreadsheet is accepted as-is. Only `name` and `email` are read.
+**Any other column is discarded when the file is parsed**, so an uploaded roster
+cannot introduce a field that some later layer might echo back to a browser.
+
+XLSX is deliberately **not** supported. Reading it needs a dependency that is
+not part of an API-only install, and adding one would make the Automation
+adapter unavailable on deployments that never upload a spreadsheet.
+
+Validation happens in four layers, because each catches a different problem:
+
+| Check | Rejects with |
+|---|---|
+| Extension allowlist (`.json`, `.csv`), before any byte is read | 422 `VALIDATION_ERROR` |
+| Size limit, enforced while streaming, and NUL bytes in the content | 422 with `details.max_bytes` |
+| Structure: JSON array of objects, CSV header with both columns | 422 `VALIDATION_ERROR` |
+| Per record: `name` and `email` present and non-blank, plausible email, no duplicate name, no duplicate email | 422 with `details.row` and `details.field` |
+| Empty directory, or more than `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | 422 `VALIDATION_ERROR` |
+
+Duplicate names are rejected rather than resolved: attendee matching falls back
+to a first name, so two people sharing one name would silently resolve every
+mention to the first record found.
+
+Error `details` carry the row index and field name, never the offending value and
+never a filesystem path. The stored filename is generated server-side as
+`<uuid4>_<sanitized stem><ext>` and opened with `O_EXCL`, so a client cannot
+choose where a file lands, cannot traverse out of the upload directory, and
+cannot overwrite an earlier upload. A file that fails validation is removed
+before the error is returned.
+
+Status codes: 201 accepted, 422 rejected, 503/504 not applicable (no agent runs).
+
+### `GET /api/v1/automation/directories`
+
+List directories this instance has accepted, newest first. An empty manifest
+returns an empty list rather than an error.
+
+### `GET /api/v1/automation/directories/{directory_id}`
+
+Return the directory summary and its full employee records, with an
+`employees_truncated` flag. An unknown id and an id whose stored file is gone
+are reported identically as **404 `DIRECTORY_NOT_FOUND`**, so the response never
+confirms whether a given identifier ever existed. A stored file that no longer
+parses returns **422**; it is never quietly ignored.
+
+### Drafting against a selected directory
+
+`POST /api/v1/agents/execute` for the Automation Agent accepts one **optional**
+payload key alongside `instruction`:
+
+```json
+{
+  "agent": "automation",
+  "operation": "draft_action",
+  "payload": {
+    "instruction": "Schedule a sprint planning on 5 March with Aarti",
+    "directory_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41"
+  }
+}
+```
+
+Omit `directory_id` (or send `null` or a blank string) and the packaged
+`automation_agent/data/employees.json` is used exactly as before. The default
+directory is **never** replaced or overwritten by an upload.
+
+An unknown or unusable `directory_id` returns an error. It deliberately does
+**not** fall back to the default directory: a silent fall-back would produce a
+draft addressed to the wrong people while reporting success.
+
+The result gains a `directory` block naming the roster that was used, so a
+caller can tell which directory produced the recipients:
+
+```json
+"directory": { "directory_id": "9f2c1d0b…", "source": "uploaded", "employee_count": 42 }
+```
+
+`source` is `default` when no directory was selected. Recipients are reduced to
+`name` and `email` at the adapter boundary, so no other field from an uploaded
+roster can reach a client.
+
+**Parser limitations.** A directory changes *which employees* a request can
+resolve, nothing else. The parser still extracts a fixed set of fields — title,
+date, time, venue, attendees — by regex. There is **no department, role, or team
+parsing**, because the employee schema has never had those fields and the parser
+has no code path for them. Attendee matching is a case-insensitive substring
+match of the full name, then of the first name only; a bare surname resolves to
+nobody, which is deliberate.
+
+**Draft-only.** A directory changes recipients, never behaviour. The agent still
+drafts and never sends mail or schedules a meeting.
+
+### Employee directory storage is a local MVP
+
+Uploaded directories live in `AUTOMATION_UPLOAD_DIR` on the machine running the
+API, and metadata lives in a JSON manifest beside them. Both are gitignored. This
+inherits every limitation of the Knowledge upload storage described above:
+files are not shared between instances, storage is bounded only by disk, and the
+single-file manifest is unsafe for concurrent cross-process writes. A deployment
+needs persistent shared storage and a real metadata store.
+
+There is **no delete operation** for an employee directory, for the same reason
+there is none for a document.
+
+### `POST /api/v1/performance/datasets`
+
+Upload a dataset from a browser. Returns **201 Created** with the id that
+identifies it. That id is what a job request refers to; the stored path is never
+returned.
+
+Accepted extensions are `.csv` and `.xlsx`. `.xls` is **not** accepted: the
+loader routes it to the `xlrd` engine, which is not a dependency, so it would be
+accepted here only to fail later as an opaque job error. It is refused up front
+with a message that names the formats that do work.
+
+The file is streamed to disk with the size limit enforced **during** the write,
+so an oversized upload is abandoned rather than buffered, and a rejected upload
+leaves no file behind. After the write the file is read back through a **bounded**
+preview — header plus five rows — which proves the parser can open it and yields
+its real column names without loading the whole dataset. An XLSX must also be a ZIP
+container, so a CSV renamed `.xlsx` is caught before the parser sees it.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/performance/datasets \
+  -F 'file=@Financials.csv'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "dataset": {
+      "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071",
+      "filename": "Financials.csv",
+      "format": "csv",
+      "size_bytes": 20480,
+      "status": "ready",
+      "column_names": ["date", "sales", "profit"],
+      "column_count": 3,
+      "is_sample": false,
+      "available": true,
+      "uploaded_at": "2026-01-01T00:00:00Z"
+    },
+    "message": "'Financials.csv' is ready to analyse."
+  },
+  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
+}
+```
+
+`column_names` are **normalized** — trimmed, lowercased, spaces turned into
+underscores — because that is what the analyzers look for, so what the client is
+told matches what a later job will actually use.
+
+Rejected with 422 `VALIDATION_ERROR`: an unsupported extension, a file over
+`PERFORMANCE_MAX_UPLOAD_BYTES`, an empty file, a mislabelled container, a CSV that
+is not UTF-8, a header row that names no column, a file that holds a header but no
+data rows, or a file the parser cannot open. Messages never contain a filesystem
+path or a traceback.
+
+### `GET /api/v1/performance/datasets`
+
+List the datasets a job may run against: the packaged sample first, then this
+instance's uploads, newest first. Also reports the server's own size limit and
+accepted formats so a client does not have to hardcode them.
+
+```json
+{
+  "datasets": [
+    {
+      "dataset_id": "sample",
+      "filename": "Financials_standardized.csv",
+      "format": "csv",
+      "is_sample": true,
+      "available": true
+    }
+  ],
+  "total": 1,
+  "max_upload_bytes": 26214400,
+  "supported_extensions": [".csv", ".xlsx"]
+}
+```
+
 ### `POST /api/v1/performance/jobs`
 
 Submit a Performance Analyzer job. Returns **202 Accepted** immediately; the
 analysis runs on a worker thread while the client polls. Supported operations:
 `load_dataset`, `compute_kpis`, `compare_periods`, `analyze`, `visualize`.
 
-`file_path` is a path on the **server**, not an upload. Supported extensions are
-`.csv`, `.xlsx`, and `.xls`. Relative paths resolve from `backend/`.
+A job names its dataset in one of two ways, and exactly one must be present.
+
+**`dataset_id` — preferred.** An id from the upload route, or the reserved value
+`sample` for the packaged dataset. The server resolves the id to a path it
+controls, so no client-supplied string is ever used as a filesystem path. An
+unknown id, a tampered id, or an id whose file was deleted fails the request with
+404 `DATASET_NOT_FOUND` **before a job is created**. There is no fallback: if the
+dataset cannot be resolved, no job runs, because silently analysing a different
+file than the one selected would report success for the wrong data.
+
+```json
+{
+  "operation": "analyze",
+  "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071"
+}
+```
+
+**`file_path` — the pre-existing server-side workflow.** A path on the **server**,
+not an upload, retained for callers that index a file already on disk. Relative
+paths resolve from `backend/`. Supplying both references is rejected rather than
+resolved.
 
 ```json
 {
@@ -407,6 +721,11 @@ Operation behaviour:
 | `compare_periods` | Period comparison across consecutive years on overlapping months. |
 | `analyze` | All 9 analyzers plus business insights. No charts written. |
 | `visualize` | Chart metadata. Renders 39 PNGs for the bundled dataset. |
+
+Note on `load_dataset`: the service reports the path it read, and the job runner
+reduces that to a bare filename before it reaches a client. An uploaded dataset
+lives under the upload directory, so returning the path as given would disclose
+the server's directory layout.
 
 ### `GET /api/v1/performance/jobs/{job_id}`
 
@@ -455,8 +774,26 @@ performance_agent/results/visualizations/jobs/<job_id>/visualizations/
 ```
 
 The API returns metadata only — `name`, `filename`, `size_bytes`. It never
-exposes an absolute filesystem path. There is no endpoint that serves the chart
-files yet.
+exposes an absolute filesystem path.
+
+### Performance dataset storage is a local MVP
+
+Uploaded datasets are stored under `PERFORMANCE_UPLOAD_DIR`, separate from
+`performance_agent/data/`, so an upload can never overwrite a packaged sample.
+Stored names are generated (`<uuid>_<safe-stem><ext>`), written with an exclusive
+create, and the original filename is kept only as display metadata. The manifest is
+a single JSON file, as with the other uploads.
+
+This inherits every limitation of the upload storage described above, and it is
+worth stating plainly: uploaded datasets are **not shared between instances**, they
+do **not survive** replacing the container or the checkout because nothing backs
+the directory, and there is **no delete route**, so the directory grows until an
+operator removes files by hand. A deployment needs persistent shared storage and a
+real metadata store. Nothing else about the pipeline changes when that happens,
+because the job runner only ever receives a path.
+
+The sample dataset is the exception: it lives in the agent package and is resolved
+from configuration, so it is always available and always the same file.
 
 ### Performance job limitations
 
@@ -477,6 +814,7 @@ storage.
 | 404 | `AGENT_NOT_FOUND` | No agent registered under that name |
 | 404 | `OPERATION_NOT_FOUND` | Agent does not advertise that operation |
 | 404 | `JOB_NOT_FOUND` | No Performance job with that id |
+| 404 | `DATASET_NOT_FOUND` | Unknown, tampered, or no-longer-present dataset id |
 | 422 | `VALIDATION_ERROR` | Malformed body or failed schema validation |
 | 500 | `INTERNAL_ERROR` | Unexpected server fault (details never exposed) |
 | 502 | `AGENT_EXECUTION_FAILED` | Connected agent raised |
@@ -500,6 +838,17 @@ environment. See `.env.example`. Notable keys:
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `console` | `LOG_FORMAT=json` for shipping |
 | `*_AGENT_ENABLED` | `false` | Set true to attempt constructing that agent at startup |
 | `KNOWLEDGE_CHROMA_PATH` | `knowledge_agent/data/chroma_db` | Vector store directory; relative paths resolve from `backend/` |
+| `KNOWLEDGE_UPLOAD_DIR` | `uploads/knowledge` | Where uploaded documents are stored; local disk, see below |
+| `KNOWLEDGE_UPLOAD_MANIFEST_PATH` | `uploads/knowledge/documents.json` | Document metadata manifest |
+| `KNOWLEDGE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Upload size limit, enforced while streaming |
+| `AUTOMATION_UPLOAD_DIR` | `uploads/automation` | Where uploaded employee directories are stored; local disk, see below |
+| `AUTOMATION_UPLOAD_MANIFEST_PATH` | `uploads/automation/directories.json` | Employee directory metadata manifest |
+| `AUTOMATION_MAX_UPLOAD_BYTES` | `2097152` (2 MB) | Employee directory upload limit, enforced while streaming |
+| `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | `5000` | Largest accepted employee count in one directory |
+| `PERFORMANCE_UPLOAD_DIR` | `uploads/performance` | Where uploaded datasets are stored; local disk, see below |
+| `PERFORMANCE_UPLOAD_MANIFEST_PATH` | `uploads/performance/datasets.json` | Dataset metadata manifest |
+| `PERFORMANCE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Dataset upload limit, enforced while streaming |
+| `PERFORMANCE_SAMPLE_DATASET_PATH` | `performance_agent/data/Financials_standardized.csv` | Dataset exposed to browsers as `sample`; resolved server-side |
 | `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |
@@ -607,9 +956,9 @@ rather than milliseconds should follow that pattern instead.
 
 Authentication, authorization, RBAC, and per-user data — `app/api/deps.py` is
 the seam; add a dependency there rather than editing each route. Also pending:
-database and persistence, agent-specific upload and dataset endpoints, file
-storage, an endpoint that serves Performance visualization files, streaming
-responses (SSE), rate limiting, and LLM-based agent routing.
+database and persistence, a durable or shared file store for the three upload
+directories (see below), document and dataset deletion, streaming responses (SSE),
+rate limiting, and LLM-based agent routing.
 
 To add a synchronous agent: implement `AgentAdapter`, register it in
 `app/agents/factory.py`, and add a description in `app/api/v1/agents.py`. No

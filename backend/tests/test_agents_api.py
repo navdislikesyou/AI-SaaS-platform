@@ -204,10 +204,14 @@ async def test_execute_malformed_json_returns_422(client: AsyncClient) -> None:
     assert response.json()["success"] is False
 
 
-async def test_placeholder_adapters_are_registered_but_unavailable() -> None:
-    """The real platform agents register as placeholders with no logic.
+async def test_platform_agents_are_registered_under_their_stable_names() -> None:
+    """The real platform agents register under the names clients use.
 
-    This is the expected pre-integration state and must stay observable.
+    The Knowledge and Automation agents are implemented, so whether they
+    report as available depends on whether their optional dependencies are
+    installed. The Performance Analyzer is served as background jobs, so it
+    advertises no operation here and cannot be executed through this endpoint
+    whatever its availability flag says.
     """
     from app.agents.factory import build_registry
     from app.core.config import Settings
@@ -217,4 +221,5 @@ async def test_placeholder_adapters_are_registered_but_unavailable() -> None:
     assert len(registry) == 3
     for name in ("knowledge", "automation", "performance"):
         assert registry.has(name)
-        assert registry.get(name).is_available() is False
+
+    assert registry.get("performance").capabilities() == []

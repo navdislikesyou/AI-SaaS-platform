@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import Navigation from '../components/Navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
+import { ROLES } from '../context/authRoles';
 
 const BASE_TABS = [
   { id: 'profile', label: 'Account Profile' },
@@ -28,7 +29,7 @@ export default function SettingsPage() {
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [selectedRole, setSelectedRole] = useState('Employee');
 
-  const TABS = user?.accessLevel === 'Global' ? [...BASE_TABS, ...ADMIN_TABS] : BASE_TABS;
+  const TABS = user?.role === ROLES.ADMIN ? [...BASE_TABS, ...ADMIN_TABS] : BASE_TABS;
 
   return (
     <div className="agent-page">
@@ -107,7 +108,7 @@ export default function SettingsPage() {
                           </div>
                           <div style={{ flex: 1 }}>
                             <h3 style={{ fontSize: '1rem', fontWeight: 500, color: '#f5f4f0' }}>Organization</h3>
-                            <p className="body-text" style={{ fontSize: '0.875rem', marginTop: '4px', opacity: 0.8 }}>{user?.organization || '—'}</p>
+                            <p className="body-text" style={{ fontSize: '0.875rem', marginTop: '4px', opacity: 0.8 }}>{user?.organizationId || '—'}</p>
                           </div>
                         </div>
                         
@@ -116,7 +117,7 @@ export default function SettingsPage() {
                         <div className="settings-row" style={{ display: 'flex', gap: '40px' }}>
                           <div style={{ flex: 1 }}>
                             <h3 style={{ fontSize: '1rem', fontWeight: 500, color: '#f5f4f0' }}>Access Level</h3>
-                            <p className="body-text" style={{ fontSize: '0.875rem', marginTop: '4px', opacity: 0.8 }}>{user?.accessLevel || '—'} Access</p>
+                            <p className="body-text" style={{ fontSize: '0.875rem', marginTop: '4px', opacity: 0.8 }}>{user?.role || '—'}</p>
                           </div>
                           <div style={{ flex: 1 }}>
                             <h3 style={{ fontSize: '1rem', fontWeight: 500, color: '#f5f4f0' }}>User ID</h3>

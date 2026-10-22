@@ -164,7 +164,7 @@ async def test_unconnected_adapter_execution_raises_503(
     operation = capabilities[0] if capabilities else "analyze"
 
     with pytest.raises(AgentUnavailableError) as exc_info:
-        await adapter.execute(operation, {})
+        await adapter.execute(operation, {}, user_context=PRINCIPAL)
 
     assert exc_info.value.status_code == 503
 
@@ -215,7 +215,7 @@ async def test_adapter_rejects_unknown_operation_when_available(
     assert adapter.is_available() is True
 
     with pytest.raises(UnknownOperationError):
-        await adapter.execute("definitely_not_supported", {})
+        await adapter.execute("definitely_not_supported", {}, user_context=PRINCIPAL)
 
 
 # --------------------------------------------------------------------------
@@ -240,6 +240,15 @@ VALID_PAYLOAD = {
     "instruction": "Schedule a sprint planning on 5 March with Navneet",
 }
 
+#: Principal handed to the adapter under test. The adapters authorize the
+#: caller before they reach the agent, so a principal is part of the contract
+#: an implementation has to satisfy.
+PRINCIPAL = {
+    "user_id": "test-user-1",
+    "organization_id": "test-org-1",
+    "role": "employee",
+}
+
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
 async def test_connected_adapter_returns_a_dictionary(
@@ -256,7 +265,7 @@ async def test_connected_adapter_returns_a_dictionary(
     adapter = connected_adapter(adapter_cls)
 
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, dict(VALID_PAYLOAD))
+        result = await adapter.execute(operation, dict(VALID_PAYLOAD), user_context=PRINCIPAL)
 
         assert isinstance(result, dict), f"{operation} returned {type(result).__name__}"
 
@@ -277,7 +286,7 @@ async def test_capabilities_match_operations_that_dispatch(
     adapter = connected_adapter(adapter_cls)
 
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, dict(VALID_PAYLOAD))
+        result = await adapter.execute(operation, dict(VALID_PAYLOAD), user_context=PRINCIPAL)
 
         assert isinstance(result, dict), f"{operation} is advertised but does not run"
 
@@ -317,7 +326,7 @@ async def test_invalid_payload_raises_a_validation_error(
 
     for operation in adapter.capabilities():
         with pytest.raises(ValidationFailedError) as exc_info:
-            await adapter.execute(operation, {})
+            await adapter.execute(operation, {}, user_context=PRINCIPAL)
 
         assert exc_info.value.status_code == 422
 
@@ -334,11 +343,11 @@ async def test_blank_payload_value_raises_a_validation_error(
         adapter_cls: The adapter class under test.
     """
     adapter = connected_adapter(adapter_cls)
-    blank = {key: "   " for key in VALID_PAYLOAD}
+    blank = dict.fromkeys(VALID_PAYLOAD, "   ")
 
     for operation in adapter.capabilities():
         with pytest.raises(ValidationFailedError):
-            await adapter.execute(operation, blank)
+            await adapter.execute(operation, blank, user_context=PRINCIPAL)
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
@@ -367,7 +376,7 @@ async def test_agent_failure_is_translated_to_execution_error(
 
     for operation in adapter.capabilities():
         with pytest.raises(AgentExecutionError) as exc_info:
-            await adapter.execute(operation, dict(VALID_PAYLOAD))
+            await adapter.execute(operation, dict(VALID_PAYLOAD), user_context=PRINCIPAL)
 
         assert exc_info.value.status_code == 502
         assert "/secret/path" not in exc_info.value.message

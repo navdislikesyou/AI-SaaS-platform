@@ -13,6 +13,33 @@ from typing import Any
 from app.agents.base import AgentAdapter
 
 
+class FakePrincipal:
+    """A stand-in for an authenticated user.
+
+    Routers resolve the principal to scope resources to an organisation. A
+    record without an owner is invisible to every organisation, so a test that
+    uploads a resource and then lists it needs a principal that owns it.
+    """
+
+    def __init__(
+        self,
+        user_id: str = "test-user-1",
+        organization_id: str = "test-org-1",
+        role: str = "employee",
+    ) -> None:
+        """Initialize the principal.
+
+        Args:
+            user_id: The user identifier.
+            organization_id: The organisation that owns the user's resources.
+            role: The role name the routers may read.
+        """
+        self.id = user_id
+        self.organization_id = organization_id
+        self.role = role
+        self.is_active = True
+
+
 class EchoAgent(AgentAdapter):
     """An available agent that echoes back the operation and payload.
 
@@ -61,12 +88,19 @@ class EchoAgent(AgentAdapter):
         """
         return True
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Echo the operation and payload.
 
         Args:
             operation: The requested operation.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             An object echoing the call, plus a call counter.
@@ -159,12 +193,19 @@ class ExplodingAgent(AgentAdapter):
         """
         return True
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Raise a runtime error.
 
         Args:
             operation: The requested operation.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Raises:
             RuntimeError: Always.
@@ -221,12 +262,19 @@ class SlowAgent(AgentAdapter):
         """
         return True
 
-    def run(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Sleep past the adapter timeout.
 
         Args:
             operation: The requested operation.
             payload: The request payload.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal.
 
         Returns:
             A payload reporting the elapsed sleep. Normally unreachable because

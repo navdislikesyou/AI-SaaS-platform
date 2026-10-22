@@ -27,7 +27,12 @@ from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.base import PlaceholderAgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api import deps
-from app.api.deps import get_orchestrator, get_registry, get_settings_dep
+from app.api.deps import (
+    get_current_user_from_token_optional_principal,
+    get_orchestrator,
+    get_registry,
+    get_settings_dep,
+)
 from app.core.config import Settings
 from app.core.exceptions import AgentUnavailableError
 from app.main import create_app
@@ -91,6 +96,7 @@ def build_client(settings: Settings, adapters: list[Any]) -> AsyncClient:
     application.dependency_overrides[get_settings_dep] = lambda: settings
     application.dependency_overrides[get_registry] = lambda: registry
     application.dependency_overrides[get_orchestrator] = lambda: Orchestrator(registry)
+    application.dependency_overrides[get_current_user_from_token_optional_principal] = lambda: None  # noqa: E501
 
     return AsyncClient(
         transport=ASGITransport(app=application),  # type: ignore[arg-type]

@@ -1,8 +1,8 @@
+from knowledge_agent.embeddings.embedding_model import EmbeddingModel
+from knowledge_agent.llm.local_llm import LocalLLM
 from knowledge_agent.loaders.loader import DocumentLoader
 from knowledge_agent.splitter.splitter import DocumentSplitter
-from knowledge_agent.embeddings.embedding_model import EmbeddingModel
 from knowledge_agent.vectordb.chroma_store import ChromaStore
-from knowledge_agent.llm.local_llm import LocalLLM
 
 
 class KnowledgeAgent:
@@ -24,18 +24,20 @@ class KnowledgeAgent:
 
         self.llm = llm or LocalLLM()
 
-    def ingest(self, file_path, reset=False):
+    def ingest(self, file_path, reset=False, user_context=None):
 
         documents = self.loader.load_document(file_path)
 
         chunks = self.splitter.split(documents)
 
+        self._stamp_ownership(chunks, user_context)
+
         return self.vector_store.index_documents(chunks, reset=reset)
 
-    def ask(self, question):
+    def ask(self, question, user_context=None):
 
         # retrieve the top 4 most relevant chunks
-        results = self.vector_store.search(question, k=4)
+        results = self.vector_store.search(question, k=4, user_context=user_context)
 
         # use the COMPLETE chunks
         context = "\n\n".join(
@@ -93,3 +95,28 @@ Answer:
             )
 
         return answer, sources
+
+    def _stamp_ownership(self, chunks, user_context):
+        """Write the owning organization onto every chunk about to be indexed.
+
+        The metadata is what the retrieval path filters on, so a chunk without
+        it belongs to no organization and stays invisible to everyone.
+
+        Args:
+            chunks: The chunks to stamp, modified in place.
+            user_context: Optional dict with ``user_id`` and
+                ``organization_id`` from the authenticated principal.
+        """
+
+        if not user_context:
+            return
+
+        organization_id = user_context.get("organization_id")
+        owner_id = user_context.get("user_id")
+
+        for chunk in chunks:
+            metadata = getattr(chunk, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            metadata["organization_id"] = organization_id
+            metadata["owner_id"] = owner_id

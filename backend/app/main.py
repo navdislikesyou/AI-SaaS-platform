@@ -19,6 +19,7 @@ from app.agents.factory import build_registry
 from app.api.deps import init_orchestrator, init_registry
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
+from app.core.database import init_engine, shutdown_engine
 from app.core.exceptions import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
@@ -65,6 +66,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registry = build_registry(resolved)
         init_registry(registry)
         init_orchestrator(Orchestrator(registry))
+        # Initialize database engine
+        init_engine(resolved.database_url, echo=resolved.environment != "production")
         logger.info(
             "startup app=%s version=%s env=%s agents=%d",
             resolved.app_name,
@@ -81,6 +84,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         yield
         logger.info("shutdown app=%s", resolved.app_name)
+        # Dispose of database engine
+        await shutdown_engine()
 
     app = FastAPI(
         title=resolved.app_name,

@@ -55,28 +55,47 @@ class AutomationService:
             len(self._agent.employees),
         )
 
-    def execute(self, instruction: str) -> dict[str, Any]:
+    def execute(
+        self,
+        instruction: str,
+        employees: list[dict[str, Any]] | None = None,
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Turn a natural language instruction into a meeting and a draft.
 
         Args:
             instruction: The instruction to act on, for example "Schedule a
                 sprint planning on 5 March at 10 AM with Navneet".
+            employees: Employee records to resolve names against. Pass a
+                different list to draft against an uploaded directory. None uses
+                the packaged directory loaded at construction.
+            user_context: Optional dict with ``user_id``, ``organization_id``,
+                and ``role`` from the authenticated principal. Scoping of the
+                roster happens in the adapter, which refuses a directory owned
+                by another organisation before the roster is read. The records
+                inside a directory do not carry an organisation of their own,
+                so they are not filtered here.
 
         Returns:
             A dictionary with ``meeting`` holding the parsed details,
-            ``recipients`` holding the matched employee records, and ``email``
-            holding the drafted body. The draft is not sent.
+            ``recipients`` holding the matched employee records, ``email``
+            holding the drafted body, and ``employee_count`` reporting how large
+            the roster that was used. The draft is not sent.
         """
-        meeting, recipients, email = self._agent.execute(instruction)
+        roster = employees if employees is not None else self._agent.employees
+
+        meeting, recipients, email = self._agent.execute(instruction, roster)
 
         logger.info(
-            "automation_execute recipients=%d title=%s",
+            "automation_execute recipients=%d title=%s employees=%d",
             len(recipients),
             meeting.get("title", ""),
+            len(roster),
         )
 
         return {
             "meeting": meeting,
             "recipients": recipients,
             "email": email,
+            "employee_count": len(roster),
         }
