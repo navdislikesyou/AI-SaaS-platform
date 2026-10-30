@@ -1,7 +1,3 @@
-import os
-
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-
 from pathlib import Path
 
 from backend.knowledge_agent.knowledge_agent import KnowledgeAgent
@@ -9,67 +5,161 @@ from backend.knowledge_agent.knowledge_agent import KnowledgeAgent
 
 def main():
 
-    pdf_path = (
-        Path(__file__).parent
+    # =========================================================
+    # PROJECT ROOT
+    # =========================================================
+
+    project_root = Path(__file__).resolve().parents[2]
+
+    # =========================================================
+    # DOCUMENT PATH
+    # =========================================================
+
+    document_path = (
+        project_root
+        / "backend"
+        / "knowledge_agent"
         / "data"
         / "documents"
         / "sample.pdf"
     )
 
-    print("=" * 60)
-    print("          ENTERPRISE KNOWLEDGE AGENT")
-    print("=" * 60)
+    # =========================================================
+    # INITIALIZE KNOWLEDGE AGENT
+    # =========================================================
 
     agent = KnowledgeAgent()
 
+    # =========================================================
+    # LOAD / INDEX KNOWLEDGE BASE
+    # =========================================================
+
     print("\nLoading Knowledge Base...\n")
 
-    agent.ingest(str(pdf_path))
+    agent.ingest(
+        str(document_path)
+    )
 
-    print("Knowledge Base Ready!")
-    print("=" * 60)
+    # =========================================================
+    # INTERACTIVE QUESTION LOOP
+    # =========================================================
+
+    print("\n" + "=" * 70)
+    print("KNOWLEDGE AGENT")
+    print("=" * 70)
+
+    print("\nAsk questions about the uploaded documents.")
+    print("Type 'exit' or 'quit' to stop.\n")
 
     while True:
 
-        question = input("\nQuestion (type 'exit' to quit): ")
+        try:
 
-        if question.lower() == "exit":
-            print("\nThank you for using the Knowledge Agent!\n")
+            question = input("Question: ").strip()
+
+        except KeyboardInterrupt:
+
+            print("\n\nExiting Knowledge Agent.")
             break
 
-        answer, sources = agent.ask(question)
+        except EOFError:
 
-        print("\n" + "=" * 60)
-        print("QUESTION")
-        print("-" * 60)
-        print(question)
+            print("\n\nExiting Knowledge Agent.")
+            break
 
-        print("\nANSWER")
-        print("-" * 60)
-        print(answer)
+        # -----------------------------------------------------
+        # Ignore empty input
+        # -----------------------------------------------------
 
-        print("\nSOURCES")
-        print("-" * 60)
+        if not question:
+            continue
 
-        shown = set()
+        # -----------------------------------------------------
+        # Exit
+        # -----------------------------------------------------
 
-        for source in sources:
+        if question.lower() in {
+            "exit",
+            "quit",
+            "q"
+        }:
 
-            key = (
-                source["source"],
-                source["page"],
-            )
+            print("\nExiting Knowledge Agent.")
+            break
 
-            if key in shown:
-                continue
+        # -----------------------------------------------------
+        # Ask Knowledge Agent
+        # -----------------------------------------------------
 
-            shown.add(key)
+        try:
+
+            result = agent.ask(question)
+
+            # =================================================
+            # ANSWER
+            # =================================================
+
+            print("\n" + "=" * 70)
+            print("ANSWER")
+            print("=" * 70)
 
             print(
-                f"{Path(source['source']).name} (Page {source['page']})"
+                result["answer"]
             )
 
-        print("=" * 60)
+            # =================================================
+            # SOURCES
+            # =================================================
+
+            print("\n" + "-" * 70)
+            print("SOURCES")
+            print("-" * 70)
+
+            if result["sources"]:
+
+                for source in result["sources"]:
+
+                    file_name = Path(
+                        source["source"]
+                    ).name
+
+                    page_start = source[
+                        "page_start"
+                    ]
+
+                    page_end = source[
+                        "page_end"
+                    ]
+
+                    if page_start == page_end:
+
+                        print(
+                            f"- {file_name} "
+                            f"(Page {page_start})"
+                        )
+
+                    else:
+
+                        print(
+                            f"- {file_name} "
+                            f"(Pages {page_start}-{page_end})"
+                        )
+
+            else:
+
+                print("No sources available.")
+
+            print()
+
+        except Exception as e:
+
+            print(
+                "\nError while processing question:"
+            )
+
+            print(e)
+
+            print()
 
 
 if __name__ == "__main__":

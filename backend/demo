@@ -1,0 +1,2 @@
+cd "D:\COLLEGE\7th\project\AI SaaS platform\backend\performance_agent"
+streamlit run app.py

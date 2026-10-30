@@ -8,9 +8,9 @@ from langchain_community.document_loaders import (
 
 
 class DocumentLoader:
+
     def load_document(self, file_path: str):
         path = Path(file_path)
-
         suffix = path.suffix.lower()
 
         if suffix == ".pdf":
@@ -20,9 +20,14 @@ class DocumentLoader:
             loader = Docx2txtLoader(file_path)
 
         elif suffix == ".txt":
-            loader = TextLoader(file_path, encoding="utf-8")
+            loader = TextLoader(
+                file_path,
+                encoding="utf-8"
+            )
 
         else:
-            raise ValueError(f"Unsupported file type: {suffix}")
+            raise ValueError(
+                f"Unsupported file type: {suffix}"
+            )
 
         return loader.load()

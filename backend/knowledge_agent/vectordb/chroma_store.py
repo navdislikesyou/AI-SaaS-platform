@@ -2,9 +2,7 @@ from langchain_chroma import Chroma
 
 
 class ChromaStore:
-
     def __init__(self, embedding_model):
-
         self.vector_store = Chroma(
             collection_name="knowledge_base",
             embedding_function=embedding_model,
@@ -12,11 +10,8 @@ class ChromaStore:
         )
 
     def index_documents(self, documents):
-
         if self.vector_store._collection.count() > 0:
-
             print("Existing knowledge base found.\n")
-
             return
 
         print("Creating knowledge base for the first time...\n")
@@ -25,10 +20,15 @@ class ChromaStore:
 
         print("Knowledge base created successfully.\n")
 
-    def search(self, query, k=5):
+    def search(self, query, k=15):
+        """
+        Initial semantic retrieval.
 
-        return self.vector_store.max_marginal_relevance_search(
+        Retrieves a larger candidate set.
+        Reranking is performed separately.
+        """
+
+        return self.vector_store.similarity_search(
             query=query,
             k=k,
-            fetch_k=8,
         )
