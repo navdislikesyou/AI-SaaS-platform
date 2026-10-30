@@ -1,0 +1,34 @@
+[
+    {
+        "employee_id": "EMP001",
+        "name": "Navneet Verma",
+        "email": "navneet.verma2023@ssipmt.com",
+        "role": "Unassigned",
+        "department": "Unassigned",
+        "active": true
+    },
+    {
+        "employee_id": "EMP002",
+        "name": "Mohammed Ashhar Khan",
+        "email": "mohammed.ashharkhan2023@ssipmt.com",
+        "role": "Unassigned",
+        "department": "Unassigned",
+        "active": true
+    },
+    {
+        "employee_id": "EMP003",
+        "name": "Pulkita Verma",
+        "email": "pulkita.verma2023@ssipmt.com",
+        "role": "Unassigned",
+        "department": "Unassigned",
+        "active": true
+    },
+    {
+        "employee_id": "EMP004",
+        "name": "Omkar Shenwai",
+        "email": "omkar.shenwai2023@ssipmt.com",
+        "role": "Unassigned",
+        "department": "Unassigned",
+        "active": true
+    }
+]

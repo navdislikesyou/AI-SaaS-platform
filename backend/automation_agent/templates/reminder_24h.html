@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+
+    <p>Dear {{ recipient_name }},</p>
+
+    <p>This is a reminder that the following meeting is scheduled for tomorrow.</p>
+
+    <p>
+        <b>Meeting:</b> {{ title }}<br>
+        <b>Purpose:</b> {{ reason }}<br>
+        <b>Date:</b> {{ date }}<br>
+        <b>Time:</b> {{ time }}<br>
+        <b>Venue:</b> {{ venue }}
+    </p>
+
+    <p>Please ensure your availability.</p>
+
+    <p>Regards,<br>{{ sender_name }}</p>
+
+</body>
+</html>

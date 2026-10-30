@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 .env
 *.env
+backend/automation_agent/email/credentials.json
+backend/automation_agent/email/token.json

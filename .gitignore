@@ -30,3 +30,10 @@ backend/outputs/
 # OS files
 .DS_Store
 Thumbs.db
+
+backend/automation_agent/email/credentials.json
+backend/automation_agent/email/token.json
+backend/automation_agent/data/scheduler.sqlite
+backend/employee_insights/email_collector/token.json
+
+backend/hiring_agent/
