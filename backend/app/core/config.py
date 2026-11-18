@@ -135,6 +135,7 @@ class Settings(BaseSettings):
     knowledge_agent_enabled: bool = False
     automation_agent_enabled: bool = False
     performance_agent_enabled: bool = False
+    employee_insights_agent_enabled: bool = False
 
     knowledge_chroma_path: Path = Path("knowledge_agent/data/chroma_db")
     knowledge_embedding_model: str = "BAAI/bge-base-en-v1.5"
@@ -173,6 +174,7 @@ class Settings(BaseSettings):
     knowledge_agent_timeout_seconds: float = 300.0
     automation_agent_timeout_seconds: float = 180.0
     performance_agent_timeout_seconds: float = 600.0
+    employee_insights_agent_timeout_seconds: float = 180.0
 
     agent_max_concurrency: int = 4
 

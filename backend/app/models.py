@@ -17,6 +17,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     String,
+    UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -292,3 +294,65 @@ def validate_role(role: str) -> str:
             details={"field": "role"},
         )
     return role
+
+
+class Feedback(Base):
+    """Employee feedback record, scoped to one organization.
+
+    Stores one piece of feedback attributed to an employee, with its RoBERTa
+    sentiment classification and the source it came from. Dedup is enforced by
+    a unique constraint on (organization_id, source, source_message_id,
+    employee_id, feedback_hash) so the same email/feedback is never stored
+    twice for the same organization.
+    """
+
+    __tablename__ = "feedback"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    employee_id: Mapped[str] = mapped_column(String(191), nullable=False, index=True)
+    employee_name: Mapped[str] = mapped_column(String(191), nullable=False)
+    employee_email: Mapped[str | None] = mapped_column(String(191), nullable=True)
+    feedback_text: Mapped[str] = mapped_column(String, nullable=False)
+    sentiment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual", index=True)
+    source_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    feedback_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "source",
+            "source_message_id",
+            "employee_id",
+            "feedback_hash",
+            name="uq_feedback_dedup",
+        ),
+        Index("ix_feedback_created_at", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        created_at = self.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        return {
+            "id": self.id,
+            "organization_id": self.organization_id,
+            "employee_id": self.employee_id,
+            "employee_name": self.employee_name,
+            "employee_email": self.employee_email,
+            "feedback": self.feedback_text,
+            "sentiment": self.sentiment,
+            "confidence": self.confidence,
+            "source": self.source,
+            "source_message_id": self.source_message_id,
+            "created_at": created_at.astimezone(UTC).isoformat(),
+        }

@@ -30,6 +30,7 @@ module = [
     "knowledge_agent.*",
     "automation_agent.*",
     "performance_agent.*",
+    "employee_insights.*",
 ]
 follow_imports = "skip"
 ignore_errors = true

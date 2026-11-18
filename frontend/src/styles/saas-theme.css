@@ -180,6 +180,18 @@
   color: #E8FF72;
 }
 
+/* "New" badge — subtle green for newly added agents */
+.saas-nav-link-badge.new-badge {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.saas-nav-link.active .saas-nav-link-badge.new-badge {
+  background: rgba(139, 92, 246, 0.25);
+  color: #a78bfa;
+}
+
 /* Sidebar Footer */
 .saas-sidebar-footer {
   padding: 14px 16px;
@@ -751,4 +763,33 @@
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+/* Sentiment badges used in the Employee Insights results table */
+.sentiment-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sentiment-badge.sentiment-positive {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.sentiment-badge.sentiment-negative {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+
+.sentiment-badge.sentiment-neutral {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }

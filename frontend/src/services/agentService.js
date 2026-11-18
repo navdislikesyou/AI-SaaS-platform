@@ -49,6 +49,21 @@ const AGENT_METADATA = {
     // carries no defaultOperation or samplePayload.
     executionPath: 'jobs',
   },
+  employee_insights: {
+    num: '04',
+    name: 'Employee Insights AI',
+    displayName: 'Employee Insights',
+    short: 'INSIGHTS',
+    path: '/agents/insights',
+    color: '#8B5CF6',
+    colorLight: '#a78bfa',
+    bg: '#1a0033',
+    tagline: 'Employee feedback sentiment analysis from email communications.',
+    category: 'Workforce Insights',
+    defaultOperation: 'extract_feedback',
+    samplePayload: { email_text: 'Navneet did an excellent job completing the project.' },
+    executionPath: 'execute',
+  },
 };
 
 // Planned agents for roadmap
@@ -180,5 +195,16 @@ export const agentService = {
       operation,
       payload,
     });
+  },
+
+  /**
+   * Retrieve one page of persisted employee feedback.
+   */
+  async getEmployeeFeedback(page = 1, pageSize = 100) {
+    const query = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+    });
+    return apiClient.get(`/employee-insights/feedback?${query.toString()}`);
   },
 };

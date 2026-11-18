@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import activity, agents, auth, automation, health, knowledge, performance, users
+from app.api.v1 import activity, agents, auth, automation, employee_insights, health, knowledge, performance, users
 
 api_router = APIRouter()
+api_router.include_router(employee_insights.router)
 api_router.include_router(health.router)
 api_router.include_router(agents.router)
 api_router.include_router(activity.router)

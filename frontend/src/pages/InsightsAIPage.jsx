@@ -1,331 +1,524 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Users, Mail, Bot, ShieldCheck, Activity, TrendingUp, BarChart3 } from 'lucide-react';
 import Navigation from '../components/Navigation';
-import { useActivity } from '../hooks/useActivity';
+import { agentService } from '../services/agentService';
+import { useAgentExecution } from '../hooks/useAgentExecution';
 
-const AGENT_COLORS = {
-  knowledge: '#E8FF72',
-  automation: '#4a9dc4',
-  performance: '#FF5A00',
-};
+const AGENT_COLOR = '#8B5CF6';
 
-const AGENT_LABELS = {
-  knowledge: 'Knowledge',
-  automation: 'Automation',
-  performance: 'Performance',
-};
+function normalizeFeedbackExecution(execution) {
+  const agentResponse = execution?.data;
+  const analysis = agentResponse?.data;
 
-function formatTime(iso) {
-  try {
-    return new Date(iso).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  } catch {
-    return '';
+  if (
+    !execution?.success ||
+    agentResponse?.agent !== 'employee_insights' ||
+    agentResponse?.operation !== 'extract_feedback' ||
+    !analysis ||
+    !Array.isArray(analysis.records)
+  ) {
+    return null;
   }
+
+  return analysis;
 }
 
-function formatDay(iso) {
-  try {
-    const date = new Date(iso);
-    const today = new Date();
-
-    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-
-    const days = Math.round((startOfDay(today) - startOfDay(date)) / 86400000);
-
-    if (days === 0) return 'Today';
-    if (days === 1) return 'Yesterday';
-
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  } catch {
-    return '';
+function normalizeFeedbackPage(response) {
+  const page = response?.data;
+  const totalPages = page?.pagination?.total_pages;
+  if (
+    response?.success !== true ||
+    !Array.isArray(page?.records) ||
+    !Number.isInteger(totalPages) ||
+    totalPages < 0
+  ) {
+    throw new Error('The saved feedback response was invalid.');
   }
+  return { records: page.records, totalPages };
 }
 
-function groupByDay(records) {
-  const groups = [];
+async function fetchAllFeedback() {
+  const pageSize = 100;
+  const firstPage = normalizeFeedbackPage(
+    await agentService.getEmployeeFeedback(1, pageSize),
+  );
+  const records = [...firstPage.records];
 
-  records.forEach((record) => {
-    const label = formatDay(record.timestamp);
-    const last = groups[groups.length - 1];
+  for (let page = 2; page <= firstPage.totalPages; page += 1) {
+    const nextPage = normalizeFeedbackPage(
+      await agentService.getEmployeeFeedback(page, pageSize),
+    );
+    records.push(...nextPage.records);
+  }
 
-    if (last && last.label === label) {
-      last.items.push(record);
-    } else {
-      groups.push({ label, items: [record] });
-    }
-  });
-
-  return groups;
+  return records;
 }
 
-function CountUp({ target, suffix = '', duration = 2000 }) {
-  const [value, setValue] = useState(0);
-  useEffect(() => {
-    const start = Date.now();
-    const timer = setInterval(() => {
-      const elapsed = Date.now() - start;
-      const progress = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(Math.floor(eased * target));
-      if (progress >= 1) clearInterval(timer);
-    }, 16);
-    return () => clearInterval(timer);
-  }, [target, duration]);
-  return <>{value.toLocaleString()}{suffix}</>;
+function formatSavedAt(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return 'Timestamp unavailable';
+
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part('day')} ${part('month')} ${part('year')} · ${part('hour')}:${part('minute')} ${part('dayPeriod')?.toUpperCase()}`;
 }
-
-const AGENT_PERFORMANCE = [
-  { name: 'Hiring AI', requests: 284, color: '#FF5A00', pct: 84 },
-  { name: 'Knowledge AI', requests: 612, color: '#E8FF72', pct: 100 },
-  { name: 'Communication AI', requests: 193, color: '#4a9dc4', pct: 58 },
-  { name: 'Research AI', requests: 147, color: '#f5f4f0', pct: 44 },
-  { name: 'Insights AI', requests: 89, color: '#FFFBE8', pct: 27 },
-];
-
-const ACTIVITY_WEEKS = [
-  [12, 8, 24, 16, 20, 14, 6],
-  [18, 22, 15, 28, 32, 19, 11],
-  [24, 30, 18, 22, 26, 20, 14],
-  [28, 35, 22, 30, 42, 28, 16],
-];
 
 export default function InsightsAIPage() {
-  const navigate = useNavigate();
+  const { execute, isLoading, error } = useAgentExecution();
 
-  const { activities, isLoading: activityLoading } = useActivity();
-  const groupedActivity = groupByDay(activities);
+  const [emailText, setEmailText] = useState('');
+  const [analysisResults, setAnalysisResults] = useState(null);
+  const [unpersistedRecords, setUnpersistedRecords] = useState([]);
+  const [responseError, setResponseError] = useState(null);
+  const [feedbackRecords, setFeedbackRecords] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(null);
+
+  const refreshFeedback = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const records = await fetchAllFeedback();
+      setFeedbackRecords(records);
+      setHistoryError(null);
+      return true;
+    } catch (loadError) {
+      setHistoryError(loadError?.message || 'Unable to load saved feedback.');
+      return false;
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadInitialFeedback = async () => {
+      try {
+        const records = await fetchAllFeedback();
+        if (active) {
+          setFeedbackRecords(records);
+          setHistoryError(null);
+        }
+      } catch (loadError) {
+        if (active) {
+          setHistoryError(loadError?.message || 'Unable to load saved feedback.');
+        }
+      } finally {
+        if (active) setHistoryLoading(false);
+      }
+    };
+
+    loadInitialFeedback();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleAnalyze = async () => {
+    if (!emailText.trim() || isLoading || historyLoading) return;
+
+    setAnalysisResults(null);
+    setUnpersistedRecords([]);
+    setResponseError(null);
+    const result = await execute('employee_insights', 'extract_feedback', {
+      email_text: emailText,
+    });
+
+    if (!result.success) return;
+
+    const analysis = normalizeFeedbackExecution(result);
+    if (!analysis) {
+      setResponseError('The analysis response did not contain feedback records.');
+      return;
+    }
+
+    setAnalysisResults(analysis);
+    const persistedRecords = analysis.records.filter(
+      (record) => record.saved === true || record.duplicate === true,
+    );
+    const unsavedRecords = analysis.records.some(
+      (record) => record.saved !== true && record.duplicate !== true,
+    );
+    if (unsavedRecords) {
+      setUnpersistedRecords(
+        analysis.records.filter(
+          (record) => record.saved !== true && record.duplicate !== true,
+        ),
+      );
+      setResponseError('Analysis completed, but feedback could not be confirmed as saved. Your text is preserved.');
+      return;
+    }
+
+    if (analysis.records.length === 0) return;
+    setEmailText('');
+    const refreshed = await refreshFeedback();
+    if (!refreshed && persistedRecords.length > 0) {
+      setFeedbackRecords((current) => {
+        const existingIds = new Set(current.map((record) => record.id).filter(Boolean));
+        const newRecords = persistedRecords.filter(
+          (record) => !record.id || !existingIds.has(record.id),
+        );
+        return [...newRecords, ...current];
+      });
+    }
+  };
+
+  const records = feedbackRecords;
+  const sentimentCounts = records.reduce(
+    (acc, r) => {
+      const sentiment = typeof r.sentiment === 'string' ? r.sentiment.toUpperCase() : '';
+      if (sentiment === 'POSITIVE' || sentiment === 'NEGATIVE' || sentiment === 'NEUTRAL') {
+        acc[sentiment] += 1;
+      }
+      return acc;
+    },
+    { POSITIVE: 0, NEGATIVE: 0, NEUTRAL: 0 },
+  );
+  const totalRecords = records.length;
+  const displayedError = responseError || error || historyError;
 
   return (
     <div className="saas-workbench">
       <Navigation />
       <main className="saas-main-container">
-
-        <div className="saas-topbar">
-          <div className="saas-breadcrumb">
-            <span className="saas-breadcrumb-item">Organization</span>
-            <span className="saas-breadcrumb-sep">/</span>
-            <span className="saas-breadcrumb-active">Activity History</span>
+        <div className="saas-page-body">
+          {/* Page Header */}
+          <div className="saas-page-header">
+            <div className="saas-page-title-wrap">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <Bot size={20} style={{ color: AGENT_COLOR }} />
+                <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#22c55e', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+                  AI-powered
+                </span>
+              </div>
+              <h1 className="saas-page-title">Employee Feedback Intelligence</h1>
+              <p className="saas-page-subtitle">
+                Extract, attribute, and score employee feedback from email
+                communications using RoBERTa sentiment analysis.
+              </p>
+            </div>
+            <Link to="/agents" className="saas-btn saas-btn-secondary">
+              <span style={{ marginRight: 6 }}><Users size={14} /></span>
+              Back to Agents
+            </Link>
           </div>
-        </div>
 
-        <div className="agent-hero insights-hero">
-          <div className="agent-hero-inner">
-            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.9 }}>
-              <div className="agent-hero-breadcrumb">
-                <button onClick={() => navigate('/agents')} className="breadcrumb-back">AI Agents</button>
-                <span>→</span><span>Insights AI</span>
+          {/* Supported Sources Card */}
+          <div className="saas-card" style={{ marginBottom: 24 }}>
+            <div className="saas-card-header">
+              <div className="saas-card-title">
+                <Mail size={16} style={{ color: AGENT_COLOR, marginRight: 8 }} />
+                Supported Sources
               </div>
-              {/* <div className="agent-num-label">05</div> */}
-              <h1 className="agent-hero-heading insights">INSIGHTS AI</h1>
-              <p className="agent-hero-tagline">Understand how your<br />organization works.</p>
-            </motion.div>
+              <ShieldCheck size={14} style={{ color: '#22c55e' }} />
+            </div>
+            <div className="saas-card-body">
+              <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.65)', marginBottom: 12, lineHeight: 1.5 }}>
+                Employee Insights analyzes email text you provide. No emails are
+                sent, modified, or deleted. All results are scoped to your
+                organization.
+              </p>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: 'rgba(255,255,255,0.8)' }}>
+                  <Activity size={12} style={{ color: AGENT_COLOR }} />
+                  <span>Pasted email text</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: 'rgba(255,255,255,0.8)' }}>
+                  <Mail size={12} style={{ color: AGENT_COLOR }} />
+                  <span>.txt / .eml upload (fallback)</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div className="agent-main-body insights-body">
-
-          {/* Key metrics — editorial style */}
-          <motion.div
-            className="insights-metrics"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-          >
-            <div className="insight-metric-card">
-              <div className="insight-metric-label">Total AI Requests</div>
-              <div className="insight-metric-value">
-                <CountUp target={1325} />
-              </div>
-              <div className="insight-metric-delta up">+18% this week</div>
-            </div>
-            <div className="insight-metric-card">
-              <div className="insight-metric-label">Tasks Completed</div>
-              <div className="insight-metric-value">
-                <CountUp target={892} />
-              </div>
-              <div className="insight-metric-delta up">+24% this week</div>
-            </div>
-            <div className="insight-metric-card">
-              <div className="insight-metric-label">Time Saved</div>
-              <div className="insight-metric-value">
-                <CountUp target={247} suffix="h" />
-              </div>
-              <div className="insight-metric-delta up">This month</div>
-            </div>
-            <div className="insight-metric-card">
-              <div className="insight-metric-label">Most Used Agent</div>
-              <div className="insight-metric-value text-metric">KNOWLEDGE</div>
-              <div className="insight-metric-delta">612 requests</div>
-            </div>
-          </motion.div>
-
-          {/* Two column */}
-          <div className="insights-two-col">
-
-            {/* Agent performance */}
-            <motion.div
-              className="workspace-panel"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
+          {/* Error Display */}
+          {displayedError && (
+            <div
+              role="alert"
+              className="saas-card"
+              style={{ marginBottom: 24, borderColor: 'rgba(239, 68, 68, 0.3)' }}
             >
-              <div className="workspace-panel-header">
-                <span className="workspace-panel-label">Agent Performance</span>
-                <span className="panel-header-count">This week</span>
+              <div className="saas-card-body" style={{ padding: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <ShieldCheck size={14} style={{ color: '#f87171', marginTop: 2 }} />
+                  <span style={{ fontSize: '0.85rem', color: '#fca5a5' }}>
+                    {typeof displayedError === 'string'
+                      ? displayedError
+                      : displayedError?.message || 'Analysis failed. Please try again.'}
+                  </span>
+                </div>
               </div>
-              <div className="agent-perf-list">
-                {AGENT_PERFORMANCE.map((agent, i) => (
-                  <motion.div
-                    key={agent.name}
-                    className="agent-perf-item"
-                    initial={{ opacity: 0, x: -16 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.5 + i * 0.08 }}
+            </div>
+          )}
+
+          {/* Email Analysis Section */}
+          <div className="saas-card" style={{ marginBottom: 24 }}>
+            <div className="saas-card-header">
+              <div className="saas-card-title">
+                <Mail size={16} style={{ color: AGENT_COLOR, marginRight: 8 }} />
+                Analyze Email Feedback
+              </div>
+            </div>
+            <div className="saas-card-body">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720 }}>
+                <textarea
+                  className="saas-textarea"
+                  placeholder="Paste email content to analyze employee feedback sentiment…"
+                  value={emailText}
+                  onChange={(e) => setEmailText(e.target.value)}
+                  rows={6}
+                  style={{ minHeight: 120 }}
+                />
+                <button
+                  type="button"
+                  className="saas-btn saas-btn-primary"
+                  onClick={handleAnalyze}
+                  disabled={isLoading || historyLoading || !emailText.trim()}
+                  style={{ width: 'fit-content', padding: '10px 24px' }}
+                >
+                  {isLoading ? (
+                    <>
+                      <span style={{ marginRight: 8 }}><Bot size={14} /></span>
+                      Analyzing…
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ marginRight: 8 }}><SendIcon size={14} /></span>
+                      Analyze Feedback
+                    </>
+                  )}
+                </button>
+                {isLoading && (
+                  <p role="status" aria-live="polite" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)', margin: 0 }}>
+                    Analyzing feedback…
+                  </p>
+                )}
+                {!isLoading && !emailText.trim() && !analysisResults && (
+                  <p style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)', margin: 0 }}>
+                    Paste email content above to extract and classify employee feedback.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {historyLoading && (
+            <p role="status" aria-live="polite" style={{ color: 'rgba(255,255,255,0.7)', margin: '0 0 16px' }}>
+              Loading saved feedback…
+            </p>
+          )}
+
+          {unpersistedRecords.length > 0 && (
+            <div className="saas-card" style={{ marginBottom: 24, borderColor: 'rgba(251, 191, 36, 0.35)' }}>
+              <div className="saas-card-header">
+                <div className="saas-card-title">Analysis results not saved</div>
+              </div>
+              <div className="saas-card-body">
+                {unpersistedRecords.map((record, index) => (
+                  <article key={`${record.employee_id || record.employee_name}-${index}`} style={{ marginBottom: 12 }}>
+                    <div style={{ color: '#f4f4f5', fontWeight: 600 }}>{record.employee_name}</div>
+                    <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.75rem' }}>
+                      {record.employee_email || 'Email unavailable'}
+                    </div>
+                    <p style={{ color: '#e4e4e7', margin: '8px 0' }}>{record.feedback}</p>
+                    <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.75rem' }}>
+                      {record.sentiment}
+                      {typeof record.confidence === 'number' && Number.isFinite(record.confidence)
+                        ? ` · Confidence: ${String(record.confidence)}`
+                        : ''}
+                    </span>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sentiment Summary Cards */}
+          {analysisResults && (
+            <p role="status" aria-live="polite" style={{ color: 'rgba(255,255,255,0.7)', margin: '0 0 16px' }}>
+              Analysis complete. {analysisResults.records.length} feedback record{analysisResults.records.length !== 1 ? 's' : ''} found.
+            </p>
+          )}
+
+          {analysisResults && analysisResults.records.length === 0 && (
+            <div className="saas-card" role="status" style={{ marginBottom: 24 }}>
+              <div className="saas-card-body">
+                No employee feedback records were found in this text.
+              </div>
+            </div>
+          )}
+
+          {!historyLoading && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: 12,
+                marginBottom: 24,
+              }}
+            >
+              <SentimentCard
+                label="Total Feedback"
+                value={totalRecords}
+                icon={BarChart3}
+                color="rgba(255,255,255,0.5)"
+              />
+              <SentimentCard
+                label="Positive"
+                value={sentimentCounts.POSITIVE}
+                icon={TrendingUp}
+                color="#22c55e"
+              />
+              <SentimentCard
+                label="Negative"
+                value={sentimentCounts.NEGATIVE}
+                icon={TrendingUp}
+                color="#f87171"
+              />
+              <SentimentCard
+                label="Neutral"
+                value={sentimentCounts.NEUTRAL}
+                icon={Activity}
+                color="rgba(255,255,255,0.4)"
+              />
+            </div>
+          )}
+
+          {/* Saved Employee Feedback */}
+          {!historyLoading && totalRecords > 0 && (
+            <div className="saas-card">
+              <div className="saas-card-header">
+                <div className="saas-card-title">
+                  <Users size={16} style={{ color: AGENT_COLOR, marginRight: 8 }} />
+                  Saved Employee Feedback
+                </div>
+                <span style={{ fontSize: '0.7rem', fontFamily: 'JetBrains Mono, monospace', color: 'rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 3 }}>
+                  {totalRecords} record{totalRecords !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="saas-card-body" style={{ padding: 0 }}>
+                {records.map((record) => (
+                  <article
+                    key={record.id}
+                    style={{
+                      padding: 16,
+                      borderBottom: '1px solid rgba(255,255,255,0.08)',
+                    }}
                   >
-                    <div className="agent-perf-header">
-                      <span className="agent-perf-name">{agent.name}</span>
-                      <span className="agent-perf-count">{agent.requests}</span>
-                    </div>
-                    <div className="agent-perf-bar-track">
-                      <motion.div
-                        className="agent-perf-bar"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${agent.pct}%` }}
-                        transition={{ duration: 1, delay: 0.6 + i * 0.08, ease: [0.16, 1, 0.3, 1] }}
-                        style={{ background: agent.color }}
-                      />
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </motion.div>
-
-            {/* Workflow activity */}
-            <motion.div
-              className="workspace-panel"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5 }}
-            >
-              <div className="workspace-panel-header">
-                <span className="workspace-panel-label">Workflow Activity</span>
-                <span className="panel-header-count">4-week view</span>
-              </div>
-              <div className="activity-chart">
-                {ACTIVITY_WEEKS.map((week, wi) => (
-                  <div key={wi} className="activity-week">
-                    {week.map((val, di) => {
-                      const pct = (val / 42) * 100;
-                      return (
-                        <motion.div
-                          key={di}
-                          className="activity-cell"
-                          initial={{ opacity: 0, scaleY: 0 }}
-                          animate={{ opacity: 1, scaleY: 1 }}
-                          transition={{ delay: 0.6 + wi * 0.05 + di * 0.02 }}
-                          style={{
-                            background: pct > 70 ? '#E8FF72' : pct > 40 ? 'rgba(232,255,114,0.4)' : 'rgba(255,255,255,0.06)',
-                            height: `${Math.max(pct * 0.8, 8)}%`,
-                          }}
-                          title={`${val} requests`}
-                        />
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-              <div className="activity-chart-labels">
-                <span>4 weeks ago</span>
-                <span>This week</span>
-              </div>
-            </motion.div>
-          </div>
-
-          {/* Recent activity log */}
-          <motion.div
-            className="workspace-panel"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.6 }}
-            style={{ margin: '0 64px 48px' }}
-          >
-            <div className="workspace-panel-header">
-              <span className="workspace-panel-label">Recent Activity</span>
-            </div>
-            <div className="activity-log">
-              {activityLoading && (
-                <div className="activity-log-item">
-                  <div className="activity-log-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
-                  <div className="activity-log-info">
-                    <div className="activity-log-action">Loading activity…</div>
-                  </div>
-                </div>
-              )}
-
-              {!activityLoading && groupedActivity.length === 0 && (
-                <div className="activity-log-item">
-                  <div className="activity-log-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
-                  <div className="activity-log-info">
-                    <div className="activity-log-action">No activity yet.</div>
-                  </div>
-                </div>
-              )}
-
-              {groupedActivity.map((group) => (
-                <div key={group.label}>
-                  <div className="activity-log-user" style={{ padding: '10px 0 4px' }}>
-                    {group.label}
-                  </div>
-
-                  {group.items.map((item, i) => {
-                    const color = AGENT_COLORS[item.agent] || '#f5f4f0';
-                    const failed = item.status === 'failed';
-
-                    return (
-                      <motion.div
-                        key={item.id}
-                        className="activity-log-item"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ delay: 0.7 + i * 0.05 }}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, color: '#f4f4f5' }}>{record.employee_name}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>
+                          {record.employee_email || 'Email unavailable'}
+                        </div>
+                      </div>
+                      <time
+                        dateTime={record.created_at || undefined}
+                        style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)', textAlign: 'right' }}
                       >
-                        <div className="activity-log-dot" style={{ background: color }} />
-                        <div className="activity-log-info">
-                          <div className="activity-log-agent" style={{ color }}>
-                            {AGENT_LABELS[item.agent] || item.agent}
-                          </div>
-                          <div className="activity-log-action">{item.description}</div>
-                          <div className="activity-log-user" style={{ marginTop: '2px' }}>
-                            {failed ? (
-                              <span style={{ color: '#F87171', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                <AlertCircle size={11} />
-                                Failed
-                              </span>
-                            ) : (
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                <CheckCircle2 size={11} />
-                                Completed
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="activity-log-right">
-                          <span className="activity-log-time">{formatTime(item.timestamp)}</span>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                </div>
-              ))}
+                        {formatSavedAt(record.created_at)}
+                      </time>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '12px 0' }}>
+                      <span
+                        className={`sentiment-badge sentiment-${String(record.sentiment).toLowerCase()}`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          fontFamily: 'JetBrains Mono, monospace',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        {record.sentiment}
+                      </span>
+                      <span
+                        aria-label="Confidence score"
+                        style={{ fontSize: '0.8rem', fontFamily: 'JetBrains Mono, monospace', color: '#d4d4d8' }}
+                      >
+                        Confidence: {typeof record.confidence === 'number' && Number.isFinite(record.confidence)
+                          ? String(record.confidence)
+                          : 'Not provided'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.85rem', color: '#e4e4e7', lineHeight: 1.5, margin: 0 }}>
+                      {record.feedback}
+                    </p>
+                  </article>
+                ))}
+              </div>
             </div>
-          </motion.div>
+          )}
+
+          {!historyLoading && !displayedError && !isLoading && totalRecords === 0 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 48,
+                color: 'rgba(255,255,255,0.4)',
+                fontSize: '0.85rem',
+              }}
+            >
+              No analysis yet. Paste email content above to get started.
+            </div>
+          )}
         </div>
       </main>
     </div>
+  );
+}
+
+function SentimentCard({ label, value, icon: Icon, color }) {
+  return (
+    <div
+      className="saas-card"
+      style={{
+        padding: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        borderColor: 'rgba(255,255,255,0.08)',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, color: color }}>
+          {label}
+        </span>
+        <Icon size={16} style={{ color }} />
+      </div>
+      <span style={{ fontSize: '1.75rem', fontWeight: 700, fontFamily: 'Syne, sans-serif', color: '#fafafa' }}>{value}</span>
+    </div>
+  );
+}
+
+function SendIcon({ size }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: 'block' }}
+    >
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
   );
 }

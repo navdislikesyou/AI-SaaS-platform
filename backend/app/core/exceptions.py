@@ -103,6 +103,13 @@ class AgentTimeoutError(AppError):
     error_code = "AGENT_TIMEOUT"
 
 
+class FeedbackPersistenceError(AppError):
+    """Raised when analyzed feedback cannot be committed to persistent storage."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "FEEDBACK_PERSISTENCE_FAILED"
+
+
 class JobNotFoundError(AppError):
     """Raised when a requested background job does not exist.
 

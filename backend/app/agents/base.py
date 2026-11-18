@@ -365,12 +365,32 @@ class _Slot:
 
         Returns:
             Whatever ``func`` returns.
+
+        Raises:
+            AgentExecutionError: If the agent returns a non-object result, or
+                if the coroutine cannot be resolved.
         """
         with self._lock:
             self._entered = True
 
         try:
-            return func(operation, payload, user_context=user_context)
+            result = func(operation, payload, user_context=user_context)
+            # If the result is a coroutine (async run method), resolve it.
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = loop.run_until_complete(result)
+                except RuntimeError:
+                    # No running event loop; asyncio.run() will create one.
+                    result = asyncio.run(result)
+            if not isinstance(result, dict):
+                raise AgentExecutionError(
+                    f"Agent '{self._agent}' returned {type(result).__name__}; "
+                    "a JSON object was expected.",
+                    details={"agent": getattr(self, '_agent', 'unknown'),
+                             "operation": operation},
+                )
+            return result
         finally:
             self.release()
 

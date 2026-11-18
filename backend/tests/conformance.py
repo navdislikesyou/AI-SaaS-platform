@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.agents.adapters.automation import AutomationAgentAdapter
+from app.agents.adapters.employee_insights import EmployeeInsightsAgentAdapter
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.base import AgentAdapter, PlaceholderAgentAdapter
@@ -25,6 +26,7 @@ from app.core.exceptions import (
 PLACEHOLDER_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
 ]
 
 #: Adapters that are catalog entries only. The Performance Analyzer is
@@ -39,6 +41,7 @@ CATALOG_ONLY_ADAPTERS = [
 ALL_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
     PerformanceAgentAdapter,
 ]
 
@@ -231,6 +234,7 @@ async def test_adapter_rejects_unknown_operation_when_available(
 SERVICE_BACKED_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
 ]
 
 #: A payload that satisfies every operation on the adapters above.
@@ -238,6 +242,8 @@ VALID_PAYLOAD = {
     "file_path": "hr.pdf",
     "question": "What is the leave policy?",
     "instruction": "Schedule a sprint planning on 5 March with Navneet",
+    "email_text": "Navneet did an excellent job completing the project.",
+    "employee_id": "EMP-001",
 }
 
 #: Principal handed to the adapter under test. The adapters authorize the

@@ -52,6 +52,11 @@ AGENT_DESCRIPTIONS: dict[str, str] = {
         "visualizations, and narrative insights. Served as background jobs at "
         "POST /api/v1/performance/jobs, not through this endpoint."
     ),
+    "employee_insights": (
+        "Employee feedback sentiment analysis: extracts feedback sentences "
+        "from email text, attributes them to employees, and scores sentiment "
+        "with RoBERTa. Organization-scoped; served through this endpoint."
+    ),
 }
 
 
