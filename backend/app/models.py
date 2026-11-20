@@ -356,3 +356,89 @@ class Feedback(Base):
             "source_message_id": self.source_message_id,
             "created_at": created_at.astimezone(UTC).isoformat(),
         }
+
+
+class GmailConnection(Base):
+    """One organization's authorized Gmail mailbox.
+
+    Exactly one row per organization, enforced by a unique constraint, because
+    the connection belongs to the tenant rather than to whichever member
+    clicked Connect. The mailbox address is read from Google's profile at
+    consent time and is never configured.
+
+    The Google credential is stored as a single encrypted blob:
+    ``credentials_encrypted`` holds ``Fernet(Credentials.to_json())``, so both
+    the short-lived access token and the long-lived refresh token are out of
+    reach at rest. ``token_expiry`` is duplicated outside the blob only because
+    it is not sensitive and the status endpoint displays it.
+
+    No relationships are declared. Callers query by ``organization_id``
+    directly, which keeps the mapper independent of ``Organization``.
+    """
+
+    __tablename__ = "gmail_connections"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    connected_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    gmail_address: Mapped[str] = mapped_column(String(191), nullable=False)
+    scopes: Mapped[str] = mapped_column(String(512), nullable=False)
+    credentials_encrypted: Mapped[str] = mapped_column(String(8192), nullable=False)
+    token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            name="uq_gmail_connections_organization_id",
+        ),
+    )
+
+
+class OAuthState(Base):
+    """Single-use pending Google OAuth authorization.
+
+    Bound to one organization and one user because the callback that consumes
+    it is a bare browser navigation carrying no access token, so the binding
+    has to come from the server side rather than from a credential.
+
+    The nonce is stored only as a SHA-256 hash, mirroring how refresh tokens
+    are stored, so a database leak does not hand out usable states. The PKCE
+    verifier is stored in plaintext: it must be readable to complete the
+    exchange, and it is worthless once the state is consumed or expired.
+    """
+
+    __tablename__ = "oauth_states"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(uuid.uuid4()))
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pkce_verifier: Mapped[str] = mapped_column(String(256), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

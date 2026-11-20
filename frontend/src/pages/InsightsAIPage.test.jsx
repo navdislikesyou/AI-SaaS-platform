@@ -5,9 +5,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InsightsAIPage from './InsightsAIPage';
 import { agentService } from '../services/agentService';
+import { googleOAuthService } from '../services/googleOAuthService';
+import { useAuth } from '../context/AuthContext';
 
 vi.mock('../components/Navigation', () => ({
   default: () => <nav>AXON sidebar</nav>,
+}));
+
+vi.mock('../context/AuthContext', () => ({
+  useAuth: vi.fn(),
+}));
+
+vi.mock('../services/googleOAuthService', () => ({
+  googleOAuthService: {
+    authorize: vi.fn(),
+    status: vi.fn(),
+    disconnect: vi.fn(),
+  },
 }));
 
 vi.mock('../services/agentService', async (importOriginal) => {
@@ -83,6 +97,13 @@ beforeEach(() => {
   vi.mocked(agentService.getEmployeeFeedback)
     .mockReset()
     .mockResolvedValue(historyResponse([]));
+  vi.mocked(googleOAuthService.status).mockReset();
+  vi.mocked(googleOAuthService.authorize).mockReset();
+  vi.mocked(googleOAuthService.disconnect).mockReset();
+  // Employees never see the Gmail card, which is the default for the
+  // analysis tests below.
+  vi.mocked(useAuth).mockReset();
+  vi.mocked(useAuth).mockReturnValue({ hasRole: () => false, user: null });
 });
 
 describe('Employee Insights feedback analysis', () => {
@@ -238,5 +259,145 @@ describe('Employee Insights feedback analysis', () => {
 
     expect(await screen.findByText('Backend unavailable')).toBeInTheDocument();
     expect(textarea).toHaveValue(EMAIL_TEXT);
+  });
+});
+
+function renderAsManager() {
+  vi.mocked(useAuth).mockReturnValue({
+    hasRole: (role) => role === 'manager',
+    user: { id: 'user-1', role: 'manager' },
+  });
+
+  return renderPage();
+}
+
+function connectionStatus(data = {}) {
+  return {
+    success: true,
+    data: {
+      connected: true,
+      gmail_address: 'hr@example.test',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      ...data,
+    },
+  };
+}
+
+function syncResponse(summary) {
+  return {
+    success: true,
+    data: {
+      agent: 'employee_insights',
+      operation: 'sync_gmail',
+      data: summary,
+    },
+    message: 'Operation completed.',
+    request_id: 'request-2',
+  };
+}
+
+describe('Gmail connection card', () => {
+  it('is hidden from employees and never asks the backend for a status', () => {
+    renderPage();
+
+    expect(screen.queryByText('Gmail Connection')).toBeNull();
+    expect(googleOAuthService.status).not.toHaveBeenCalled();
+  });
+
+  it('shows the connect control to a manager once the status loads', async () => {
+    vi.mocked(googleOAuthService.status).mockResolvedValue(
+      connectionStatus({ connected: false })
+    );
+
+    renderAsManager();
+
+    expect(await screen.findByRole('button', { name: 'Connect Gmail' })).toBeInTheDocument();
+    expect(screen.queryByText('Loading connection status…')).toBeNull();
+  });
+
+  it('does not strand the card on loading when the status read fails', async () => {
+    vi.mocked(googleOAuthService.status).mockRejectedValue(
+      new Error('Backend unavailable')
+    );
+
+    renderAsManager();
+
+    expect(
+      await screen.findByText('Could not load the Gmail connection status.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Loading connection status…')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('syncs through the employee insights agent rather than an OAuth route', async () => {
+    vi.mocked(googleOAuthService.status).mockResolvedValue(connectionStatus());
+    vi.mocked(agentService.executeAgent).mockResolvedValue(
+      syncResponse({
+        organization_id: 'org-1',
+        query: 'newer_than:30d -in:spam -in:trash',
+        collected: 4,
+        skipped: 1,
+        saved: 2,
+        duplicates: 0,
+      })
+    );
+
+    renderAsManager();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Sync Gmail' }));
+
+    expect(await screen.findByText(/4 emails synced/)).toBeInTheDocument();
+    expect(screen.getByText(/2 new feedback records/)).toBeInTheDocument();
+    expect(agentService.executeAgent).toHaveBeenCalledWith(
+      'employee_insights',
+      'sync_gmail',
+      { max_results: 50 }
+    );
+  });
+
+  it('passes a custom Gmail query through to the sync operation', async () => {
+    vi.mocked(googleOAuthService.status).mockResolvedValue(connectionStatus());
+    vi.mocked(agentService.executeAgent).mockResolvedValue(
+      syncResponse({
+        organization_id: 'org-1',
+        query: 'from:boss@example.test',
+        collected: 1,
+        skipped: 0,
+        saved: 0,
+        duplicates: 1,
+      })
+    );
+
+    renderAsManager();
+    const user = userEvent.setup();
+
+    await user.type(
+      await screen.findByPlaceholderText(/newer_than:30d/),
+      'from:boss@example.test'
+    );
+    await user.click(screen.getByRole('button', { name: 'Sync Gmail' }));
+
+    expect(await screen.findByText(/1 email synced/)).toBeInTheDocument();
+    expect(screen.getByText(/1 duplicate skipped/)).toBeInTheDocument();
+    expect(agentService.executeAgent).toHaveBeenCalledWith(
+      'employee_insights',
+      'sync_gmail',
+      { max_results: 50, query: 'from:boss@example.test' }
+    );
+  });
+
+  it('reports a failed sync without claiming any mail was read', async () => {
+    vi.mocked(googleOAuthService.status).mockResolvedValue(connectionStatus());
+    vi.mocked(agentService.executeAgent).mockRejectedValue(
+      new Error('The Gmail mailbox is not connected.')
+    );
+
+    renderAsManager();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Sync Gmail' }));
+
+    expect(await screen.findByText('The Gmail mailbox is not connected.')).toBeInTheDocument();
+    expect(screen.queryByText(/emails synced/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Sync Gmail' })).toBeEnabled();
   });
 });

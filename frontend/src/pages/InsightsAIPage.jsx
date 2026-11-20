@@ -1,11 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Users, Mail, Bot, ShieldCheck, Activity, TrendingUp, BarChart3 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import { agentService } from '../services/agentService';
 import { useAgentExecution } from '../hooks/useAgentExecution';
+import { googleOAuthService } from '../services/googleOAuthService';
+import { useAuth } from '../context/AuthContext';
+import { ROLES } from '../context/authRoles';
 
 const AGENT_COLOR = '#8B5CF6';
+
+/** Messages one sync may pull. Bounds the work a single click can trigger. */
+const SYNC_MAX_RESULTS = 50;
 
 function normalizeFeedbackExecution(execution) {
   const agentResponse = execution?.data;
@@ -72,8 +78,38 @@ function formatSavedAt(value) {
   return `${part('day')} ${part('month')} ${part('year')} · ${part('hour')}:${part('minute')} ${part('dayPeriod')?.toUpperCase()}`;
 }
 
+function plural(count, singular) {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
+
+function formatSyncResult(result) {
+  if (!result) return null;
+  if (!result.collected) return 'No messages matched that query.';
+
+  const parts = [`${plural(result.collected, 'email')} synced`];
+  parts.push(`${plural(result.saved ?? 0, 'new feedback record')}`);
+  if (result.duplicates) parts.push(`${plural(result.duplicates, 'duplicate')} skipped`);
+  if (result.skipped) parts.push(`${plural(result.skipped, 'routine message')} ignored`);
+  return `${parts.join(' · ')}.`;
+}
+
 export default function InsightsAIPage() {
   const { execute, isLoading, error } = useAgentExecution();
+  const { hasRole } = useAuth();
+
+  // Gmail is a shared, organisation-wide mailbox. Connecting, reading the
+  // status, and syncing are manager-and-above operations on the backend too;
+  // hiding the card keeps an employee from clicking into a guaranteed 403.
+  const canManageGmail = hasRole(ROLES.MANAGER);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [connection, setConnection] = useState(null);
+  // 'loading' | 'ready' | 'error'. Kept separate from `connection` so a failed
+  // status call can never be mistaken for "still loading" and hang the card.
+  const [connectionStatus, setConnectionStatus] = useState('loading');
+  const [gmailQuery, setGmailQuery] = useState('');
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncLoading, setSyncLoading] = useState(false);
 
   const [emailText, setEmailText] = useState('');
   const [analysisResults, setAnalysisResults] = useState(null);
@@ -122,6 +158,38 @@ export default function InsightsAIPage() {
     };
   }, []);
 
+  const loadConnection = useCallback(async () => {
+    setConnectionStatus('loading');
+    try {
+      const response = await googleOAuthService.status();
+      setConnection(response?.data ?? null);
+      setConnectionStatus('ready');
+    } catch {
+      // A failed read is an error state, not a loading one; leaving it as
+      // "loading" would strand the card on "Loading connection status…".
+      setConnection(null);
+      setConnectionStatus('error');
+    }
+  }, []);
+
+  // Clear the callback query param so a reload does not re-announce the result.
+  useEffect(() => {
+    const oauthResult = searchParams.get('gmail');
+    if (!oauthResult) return;
+
+    setResponseError(
+      oauthResult === 'success'
+        ? null
+        : 'Gmail connection failed. Please try connecting again.'
+    );
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  // Only managers read the shared mailbox status, so an employee never fires
+  // a request the backend refuses with a 403.
+  useEffect(() => {
+    if (canManageGmail) loadConnection();
+  }, [canManageGmail, loadConnection]);
   const handleAnalyze = async () => {
     if (!emailText.trim() || isLoading || historyLoading) return;
 
@@ -168,6 +236,62 @@ export default function InsightsAIPage() {
         );
         return [...newRecords, ...current];
       });
+    }
+  };
+
+  const handleConnectGmail = async () => {
+    if (syncLoading) return;
+    try {
+      const result = await googleOAuthService.authorize();
+      const url = result?.data?.authorization_url;
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (connectError) {
+      setResponseError(
+        connectError?.message || 'Unable to start the Gmail connection.'
+      );
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      await googleOAuthService.disconnect();
+      setConnection(null);
+      setConnectionStatus('ready');
+      setSyncResult(null);
+      setResponseError(null);
+      await refreshFeedback();
+    } catch (disconnectError) {
+      setResponseError(
+        disconnectError?.message || 'Unable to disconnect Gmail.'
+      );
+    }
+  };
+
+  const handleSyncGmail = async () => {
+    if (syncLoading) return;
+    setSyncLoading(true);
+    setSyncResult(null);
+    setResponseError(null);
+    try {
+      // Sync is an Employee Insights operation, so it goes through the same
+      // agent endpoint as extraction and carries the caller's role with it.
+      const payload = { max_results: SYNC_MAX_RESULTS };
+      const query = gmailQuery.trim();
+      if (query) payload.query = query;
+
+      const result = await agentService.executeAgent(
+        'employee_insights',
+        'sync_gmail',
+        payload
+      );
+      setSyncResult(result?.data?.data ?? null);
+      await refreshFeedback();
+    } catch (syncError) {
+      setResponseError(syncError?.message || 'Gmail sync failed.');
+    } finally {
+      setSyncLoading(false);
     }
   };
 
@@ -238,6 +362,164 @@ export default function InsightsAIPage() {
               </div>
             </div>
           </div>
+
+          {/* Gmail Connection Card — managers and administrators only */}
+          {canManageGmail && (
+            <div className="saas-card" style={{ marginBottom: 24 }}>
+              <div className="saas-card-header">
+                <div className="saas-card-title">
+                  <Mail size={16} style={{ color: AGENT_COLOR, marginRight: 8 }} />
+                  Gmail Connection
+                </div>
+                {connection?.connected ? (
+                  <span
+                    style={{
+                      fontSize: '0.7rem',
+                      color: '#22c55e',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      background: 'rgba(34,197,94,0.1)',
+                      borderRadius: 4,
+                    }}
+                  >
+                    CONNECTED
+                  </span>
+                ) : null}
+              </div>
+              <div className="saas-card-body">
+                {connectionStatus === 'loading' && (
+                  <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.65)' }}>
+                    Loading connection status…
+                  </p>
+                )}
+
+                {connectionStatus === 'error' && (
+                  <>
+                    <p
+                      style={{
+                        fontSize: '0.85rem',
+                        color: '#fca5a5',
+                        marginBottom: 12,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      Could not load the Gmail connection status.
+                    </p>
+                    <button
+                      type="button"
+                      className="saas-btn saas-btn-secondary"
+                      onClick={loadConnection}
+                      style={{
+                        width: 'fit-content',
+                        padding: '10px 20px',
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </>
+                )}
+
+                {connectionStatus === 'ready' && !connection?.connected && (
+                  <>
+                    <p
+                      style={{
+                        fontSize: '0.85rem',
+                        color: 'rgba(255,255,255,0.65)',
+                        marginBottom: 12,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      Connect your organisation's Gmail mailbox to collect employee
+                      feedback directly from email. Read-only: no mail is sent,
+                      modified, or deleted.
+                    </p>
+                    <button
+                      type="button"
+                      className="saas-btn saas-btn-primary"
+                      onClick={handleConnectGmail}
+                      disabled={isLoading || historyLoading}
+                      style={{
+                        width: 'fit-content',
+                        padding: '10px 20px',
+                      }}
+                    >
+                      Connect Gmail
+                    </button>
+                  </>
+                )}
+
+                {connection?.connected && (
+                  <>
+                    <p
+                      style={{
+                        fontSize: '0.85rem',
+                        color: 'rgba(255,255,255,0.65)',
+                        marginBottom: 12,
+                      }}
+                    >
+                      Connected mailbox: <strong>{connection.gmail_address}</strong>
+                    </p>
+                    <label
+                      htmlFor="gmail-sync-query"
+                      style={{
+                        display: 'block',
+                        maxWidth: 560,
+                        fontSize: '0.75rem',
+                        color: 'rgba(255,255,255,0.6)',
+                        marginBottom: 12,
+                      }}
+                    >
+                      Gmail query (optional — blank uses the 30-day default)
+                      <input
+                        id="gmail-sync-query"
+                        type="text"
+                        className="saas-input"
+                        placeholder="newer_than:30d -in:spam -in:trash"
+                        value={gmailQuery}
+                        onChange={(event) => setGmailQuery(event.target.value)}
+                        disabled={syncLoading}
+                        style={{ marginTop: 4 }}
+                      />
+                    </label>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="saas-btn saas-btn-secondary"
+                        onClick={handleSyncGmail}
+                        disabled={syncLoading}
+                        style={{ padding: '8px 16px' }}
+                      >
+                        {syncLoading ? 'Syncing…' : 'Sync Gmail'}
+                      </button>
+                      <button
+                        type="button"
+                        className="saas-btn saas-btn-secondary"
+                        onClick={handleDisconnect}
+                        style={{ padding: '8px 16px' }}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {syncResult && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: 10,
+                      background: 'rgba(34,197,94,0.1)',
+                      borderRadius: 4,
+                      fontSize: '0.8rem',
+                      color: '#86efac',
+                    }}
+                  >
+                    {formatSyncResult(syncResult)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Error Display */}
           {displayedError && (

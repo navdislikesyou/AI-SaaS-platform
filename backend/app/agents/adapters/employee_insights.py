@@ -32,13 +32,21 @@ logger = logging.getLogger(__name__)
 ADVERTISED_CAPABILITIES = [
     "extract_feedback",
     "employee_summary",
+    "sync_gmail",
 ]
 
 #: Required payload keys per operation, keyed by operation name.
 REQUIRED_KEYS = {
     "extract_feedback": ("email_text",),
     "employee_summary": ("employee_id",),
+    #: ``query`` is optional and defaults to the configured Gmail query.
+    "sync_gmail": ("max_results",),
 }
+
+#: Roles allowed to pull the organisation's shared mailbox. A sync reads mail
+#: on behalf of everyone, so it is deliberately not an employee-level
+#: operation, matching ``require_manager`` on the connection routes.
+SYNC_ROLES = frozenset({"manager", "admin"})
 
 
 class EmployeeInsightsAgentAdapter(AgentAdapter):
@@ -158,6 +166,8 @@ class EmployeeInsightsAgentAdapter(AgentAdapter):
         Raises:
             ValidationFailedError: If a required key is missing or blank (422).
             AgentUnavailableError: If no service is connected (503).
+            ForbiddenError: If a sync is attempted without a manager or
+                administrator role, or without an organisation (403).
         """
         service = self._require_service()
         cleaned = _validate_payload(operation, payload)
@@ -185,6 +195,17 @@ class EmployeeInsightsAgentAdapter(AgentAdapter):
                 service.get_employee_summary,
                 organization_id=organization_id,
                 employee_id=cleaned.get("employee_id", "all"),
+            )
+
+        if operation == "sync_gmail":
+            # After payload validation so a bad request is still a 422 rather
+            # than being masked behind the role check.
+            _require_sync_role(user_context, self.name)
+            return _call_service(
+                service.sync_gmail,
+                organization_id=organization_id,
+                query=str(cleaned.get("query") or ""),
+                max_results=_coerce_max_results(cleaned, self._settings),
             )
 
         raise AgentUnavailableError(
@@ -219,6 +240,70 @@ def _validate_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]
         )
 
     return payload
+
+
+def _require_sync_role(user_context: dict[str, Any] | None, agent_name: str) -> None:
+    """Refuse a mailbox sync to anyone below manager level.
+
+    Args:
+        user_context: The authenticated principal, or None.
+        agent_name: Agent identifier, reported back in the error details.
+
+    Raises:
+        ForbiddenError: If the caller's role is not manager or admin (403).
+    """
+    role = str((user_context or {}).get("role") or "").strip().lower()
+
+    if role not in SYNC_ROLES:
+        raise ForbiddenError(
+            "Gmail synchronization requires a manager or administrator role.",
+            details={
+                "agent": agent_name,
+                "operation": "sync_gmail",
+                "reason": "insufficient_role",
+            },
+        )
+
+
+def _coerce_max_results(payload: dict[str, Any], settings: Any | None) -> int:
+    """Read ``max_results`` as a bounded whole number.
+
+    Args:
+        payload: The payload, already checked for a non-blank value.
+        settings: Application settings supplying the ceiling. When None the
+            cached process settings are read.
+
+    Returns:
+        The requested message count.
+
+    Raises:
+        ValidationFailedError: If the value is not an integer in 1..limit (422).
+    """
+    try:
+        value = int(str(payload.get("max_results", "")).strip())
+    except (TypeError, ValueError):
+        value = 0
+
+    if settings is None:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    limit = int(getattr(settings, "gmail_sync_max_results", 500))
+
+    if value < 1 or value > limit:
+        raise ValidationFailedError(
+            f"Operation 'sync_gmail' requires max_results to be a whole "
+            f"number between 1 and {limit}.",
+            details={
+                "agent": EmployeeInsightsAgentAdapter.AGENT_NAME,
+                "operation": "sync_gmail",
+                "field": "max_results",
+                "minimum": 1,
+                "maximum": limit,
+            },
+        )
+
+    return value
 
 
 def _call_service(method: Any, *args: Any, **kwargs: Any) -> Any:

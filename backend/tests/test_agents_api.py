@@ -224,4 +224,4 @@ async def test_platform_agents_are_registered_under_their_stable_names() -> None
 
     assert registry.get("performance").capabilities() == []
     caps = registry.get("employee_insights").capabilities()
-    assert caps == ["extract_feedback", "employee_summary"]
+    assert caps == ["extract_feedback", "employee_summary", "sync_gmail"]

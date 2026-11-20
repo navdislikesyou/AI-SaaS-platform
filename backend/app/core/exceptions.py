@@ -193,6 +193,54 @@ class ForbiddenError(AppError):
     error_code = "FORBIDDEN"
 
 
+class GmailNotConnectedError(AppError):
+    """Raised when an organization has no authorized Gmail mailbox.
+
+    Maps to 409 Conflict rather than 403 or 422: the caller is permitted and
+    the request is well formed, but a precondition the operation depends on --
+    an existing connection -- is not satisfied. Reconnecting resolves it.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "GMAIL_NOT_CONNECTED"
+
+    #: The message is fixed. It must not reveal which mailboxes exist.
+    DEFAULT_MESSAGE = "No Gmail mailbox is connected for this organization."
+
+
+class GoogleOAuthNotConfiguredError(AppError):
+    """Raised when the Google OAuth client credentials are absent.
+
+    Maps to 503 Service Unavailable because retrying after an operator
+    configures the credentials can succeed. A missing encryption key is
+    reported the same way: the routes refuse to run rather than fall back to
+    storing a refresh token in plaintext.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "GOOGLE_OAUTH_NOT_CONFIGURED"
+
+    DEFAULT_MESSAGE = "Google sign-in is not configured for this deployment."
+
+
+class GoogleTokenUnavailableError(AppError):
+    """Raised when a stored Gmail credential cannot be decrypted.
+
+    Maps to 503 Service Unavailable. The usual cause is a rotated or replaced
+    ``GOOGLE_TOKEN_ENCRYPTION_KEY``; reconnecting the mailbox re-encrypts it
+    under the current key. The underlying decryption error is logged
+    server-side and never returned.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "GOOGLE_TOKEN_UNAVAILABLE"
+
+    DEFAULT_MESSAGE = (
+        "The stored Gmail credentials cannot be read with the current "
+        "encryption key. Reconnect the mailbox."
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the shared exception handlers to an application.
 

@@ -17,6 +17,7 @@ from app.agents.base import AgentAdapter, PlaceholderAgentAdapter
 from app.core.exceptions import (
     AgentExecutionError,
     AgentUnavailableError,
+    ForbiddenError,
     UnknownOperationError,
     ValidationFailedError,
 )
@@ -244,16 +245,23 @@ VALID_PAYLOAD = {
     "instruction": "Schedule a sprint planning on 5 March with Navneet",
     "email_text": "Navneet did an excellent job completing the project.",
     "employee_id": "EMP-001",
+    "max_results": 10,
 }
 
 #: Principal handed to the adapter under test. The adapters authorize the
 #: caller before they reach the agent, so a principal is part of the contract
-#: an implementation has to satisfy.
+#: an implementation has to satisfy. It is an administrator because the
+#: capability list now contains operations that only manager-level callers
+#: may reach; the employee case is asserted separately below.
 PRINCIPAL = {
     "user_id": "test-user-1",
     "organization_id": "test-org-1",
-    "role": "employee",
+    "role": "admin",
 }
+
+#: Operations that read the organisation's shared mailbox and therefore refuse
+#: an employee principal whatever else the payload contains.
+PRIVILEGED_OPERATIONS = frozenset({"sync_gmail"})
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
@@ -354,6 +362,30 @@ async def test_blank_payload_value_raises_a_validation_error(
     for operation in adapter.capabilities():
         with pytest.raises(ValidationFailedError):
             await adapter.execute(operation, blank, user_context=PRINCIPAL)
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_privileged_operations_refuse_an_employee_principal(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """An operation that reads the shared mailbox is manager-and-above only.
+
+    The connection routes are gated by ``require_manager``; the execution
+    path reaches the agent without those dependencies, so the same rule has to
+    be enforced by the adapter itself. An employee must get a 403 rather than
+    silently receiving another user's mailbox.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+    employee = {**PRINCIPAL, "role": "employee"}
+
+    for operation in sorted(PRIVILEGED_OPERATIONS.intersection(adapter.capabilities())):
+        with pytest.raises(ForbiddenError) as exc_info:
+            await adapter.execute(operation, dict(VALID_PAYLOAD), user_context=employee)
+
+        assert exc_info.value.status_code == 403
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
