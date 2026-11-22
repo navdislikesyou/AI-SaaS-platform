@@ -7,6 +7,7 @@ so that routers do not need to change when auth is enabled/disabled.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
@@ -18,6 +19,19 @@ from app.agents.registry import AgentRegistry
 from app.core.config import Settings, get_settings
 from app.core.database import get_async_session
 from app.models import User, UserRole
+
+
+async def get_async_session_optional() -> AsyncIterator[AsyncSession | None]:
+    """Return an async session, or None when the database is not initialized.
+
+    Used by endpoints that can operate without a DB in limited/test contexts.
+    """
+    try:
+        async for session in get_async_session():
+            yield session
+    except RuntimeError:
+        yield None
+
 
 #: Global singletons (initialized during app startup).
 _registry: AgentRegistry | None = None
@@ -190,8 +204,9 @@ def get_dataset_upload_service(settings: Settings = Depends(get_settings_dep)) -
     from ``app.services.dataset_upload``.
 
     This is deliberately not the Knowledge document uploader. The two have
-    different allowlists -- documents are ``.pdf``, ``.docx``, and ``.txt``, datasets are ``.csv`` and ``.xlsx`` --
-    and different storage, so handing a browser upload to the wrong one rejects every CSV with a message about
+    different allowlists -- documents are ``.pdf``, ``.docx``, and ``.txt``,
+    datasets are ``.csv`` and ``.xlsx`` -- and different storage, so handing a
+    browser upload to the wrong one rejects every CSV with a message about
     document types.
 
     Args:
@@ -328,6 +343,12 @@ async def _verify_jwt_token(token: str, settings: Settings) -> dict[str, Any]:
             options={"require": ["exp", "sub"]},
         )
         return payload
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

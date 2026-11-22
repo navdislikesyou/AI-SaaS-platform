@@ -96,6 +96,55 @@ def _require_configured(settings: Settings) -> None:
         raise GoogleOAuthNotConfiguredError(GoogleOAuthNotConfiguredError.DEFAULT_MESSAGE)
 
 
+def requested_gmail_scopes(settings: Settings) -> list[str]:
+    """Return the scopes every new authorization requests.
+
+    ``gmail.readonly`` (Employee Insights) and ``gmail.send`` (Automation
+    Agent sending) are both requested so a single connected mailbox serves
+    both features. The order is stable so tests and log lines can compare.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        The de-duplicated list of requested Gmail scopes.
+    """
+    scopes: list[str] = []
+    for scope in (settings.gmail_readonly_scope, settings.gmail_send_scope):
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+def _granted_scopes(credentials_json: str, settings: Settings) -> str:
+    """Return the scopes actually granted by Google for this credential.
+
+    Google's serialized credential carries the ``scopes`` list it issued.
+    Persisting those (rather than assuming the requested set) keeps the
+    stored row honest when a user unchecks a scope on the consent screen.
+    Falls back to the requested scopes only when the credential does not
+    advertise them.
+
+    Args:
+        credentials_json: Serialized Google credential.
+        settings: Application settings.
+
+    Returns:
+        Space-delimited granted scopes.
+    """
+    granted: list[str] = []
+    try:
+        parsed = json.loads(credentials_json)
+        raw = parsed.get("scopes") if isinstance(parsed, dict) else None
+        if isinstance(raw, list):
+            granted = [str(item) for item in raw if str(item).strip()]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        granted = []
+    if not granted:
+        granted = requested_gmail_scopes(settings)
+    return " ".join(granted)
+
+
 def _client_config(settings: Settings) -> dict[str, Any]:
     """Build Google's web client configuration from settings.
 
@@ -163,7 +212,7 @@ def build_authorization_url(state: str, code_challenge: str, settings: Settings)
 
     flow = Flow.from_client_config(
         _client_config(settings),
-        scopes=[settings.gmail_readonly_scope],
+        scopes=requested_gmail_scopes(settings),
     )
     flow.redirect_uri = settings.google_redirect_uri
 
@@ -348,7 +397,7 @@ async def exchange_code(
         return await anyio.to_thread.run_sync(
             _exchange_for_credential,
             _client_config(settings),
-            [settings.gmail_readonly_scope],
+            requested_gmail_scopes(settings),
             settings.google_redirect_uri,
             code,
             pending.pkce_verifier,
@@ -399,7 +448,7 @@ async def save_connection(
                         organization_id=organization_id,
                         connected_by_user_id=user_id,
                         gmail_address=gmail_address,
-                        scopes=settings.gmail_readonly_scope,
+                        scopes=_granted_scopes(credentials_json, settings),
                         credentials_encrypted=encrypted,
                         token_expiry=expiry,
                     )
@@ -407,7 +456,7 @@ async def save_connection(
             else:
                 row.connected_by_user_id = user_id
                 row.gmail_address = gmail_address
-                row.scopes = settings.gmail_readonly_scope
+                row.scopes = _granted_scopes(credentials_json, settings)
                 row.credentials_encrypted = encrypted
                 row.token_expiry = expiry
 

@@ -246,6 +246,11 @@ VALID_PAYLOAD = {
     "email_text": "Navneet did an excellent job completing the project.",
     "employee_id": "EMP-001",
     "max_results": 10,
+    "recipients": [{"name": "Navneet", "email": "navneet@example.test"}],
+    "subject": "Sprint planning",
+    "html_body": "<p>Hello</p>",
+    "confirm": True,
+    "idempotency_key": "test-idempotency-key",
 }
 
 #: Principal handed to the adapter under test. The adapters authorize the
@@ -259,9 +264,10 @@ PRINCIPAL = {
     "role": "admin",
 }
 
-#: Operations that read the organisation's shared mailbox and therefore refuse
-#: an employee principal whatever else the payload contains.
-PRIVILEGED_OPERATIONS = frozenset({"sync_gmail"})
+#: Operations that touch the organisation's shared mailbox or send mail on its
+#: behalf and therefore refuse an employee principal whatever else the payload
+#: contains.
+PRIVILEGED_OPERATIONS = frozenset({"sync_gmail", "send_email"})
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)

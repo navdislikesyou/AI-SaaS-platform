@@ -25,8 +25,10 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    get_async_session,
     get_current_user_from_token_optional_principal,
     get_employee_directory_manifest,
     get_employee_directory_service,
@@ -34,9 +36,9 @@ from app.api.deps import (
     resource_is_visible_to,
 )
 from app.core.config import Settings
-from app.core.exceptions import DirectoryNotFoundError, ValidationFailedError
+from app.core.exceptions import DirectoryNotFoundError, ForbiddenError, ValidationFailedError
 from app.core.logging_config import get_request_id
-from app.models import User
+from app.models import User, UserRole
 from app.schemas.automation import (
     DirectoryDetailResponse,
     DirectoryListResponse,
@@ -53,6 +55,7 @@ from app.services.employee_directory import (
     StoredDirectoryRow,
     build_row,
     find_directory_row,
+    list_active_users_by_organization,
     list_directories,
     record_directory,
     row_to_stored,
@@ -285,6 +288,71 @@ async def get_directory(
             employees_truncated=len(records) > _LIST_LIMIT,
         ),
         request_id=get_request_id(),
+    )
+
+
+@router.get(
+    "/employees",
+    response_model=APIResponse[list[dict[str, Any]]],
+    summary="List active employees in organization",
+    description=(
+        "Returns the active registered employees belonging to the authenticated "
+        "user's organisation. Only active users are included; inactive accounts "
+        "are excluded. The organisation ID is derived from the authenticated "
+        "principal, not from the request. Client-supplied organisation information "
+        "is ignored."
+    ),
+    responses={
+        200: {
+            "description": "List of active employees in the organisation",
+        },
+        401: {"description": "Authentication credentials were not provided or were invalid"},
+        403: {"description": "User does not have Manager or Admin role"},
+    },
+)
+async def list_employees(
+    current_user: User = Depends(get_current_user_from_token_optional_principal),
+    session: AsyncSession = Depends(get_async_session),
+) -> APIResponse[list[dict[str, Any]]]:
+    """Return active registered employees in the authenticated user's organisation.
+
+    Args:
+        current_user: The authenticated user. Authentication is mandatory; if no
+            valid token is provided, a 401 is returned.
+        session: Database session for querying the User model.
+
+    Returns:
+        An envelope containing the list of active employees, each with ``id``,
+        ``email``, ``full_name``, and ``role``. Returns an empty list when the
+        organisation has no active employees.
+    """
+    # Require Manager or Admin role. Employees cannot list organization employees.
+    if current_user.role not in (UserRole.MANAGER, UserRole.ADMIN):
+        raise ForbiddenError(
+            "Manager or Admin role required to list employees.",
+            details={"reason": "insufficient_role", "user_role": current_user.role},
+        )
+
+    # Derive organisation_id from the authenticated principal; never trust
+    # organisation information supplied by the frontend or request parameters.
+    organization_id = current_user.organization_id
+
+    if organization_id is None:
+        return APIResponse(
+            data=[],
+            request_id=get_request_id(),
+            message="No organisation context available.",
+        )
+
+    active_users = await list_active_users_by_organization(
+        organization_id=organization_id,
+        session=session,
+    )
+
+    return APIResponse(
+        data=active_users,
+        request_id=get_request_id(),
+        message=f"{len(active_users)} employee(s) found.",
     )
 
 

@@ -212,6 +212,11 @@ class Settings(BaseSettings):
     #: Origin the OAuth callback redirects back to after consent.
     frontend_base_url: str = "http://localhost:5173"
     gmail_readonly_scope: str = "https://www.googleapis.com/auth/gmail.readonly"
+    gmail_send_scope: str = "https://www.googleapis.com/auth/gmail.send"
+    #: Upper bound on the number of recipients a single send_email call may address.
+    gmail_send_max_recipients: int = Field(default=50, gt=0, le=500)
+    #: Upper bound on the HTML body size (bytes) a single send_email call may carry.
+    gmail_send_max_html_bytes: int = Field(default=500_000, gt=0, le=2_000_000)
     #: Used when a sync request omits ``query``. Overridable per request.
     gmail_sync_default_query: str = "newer_than:30d -in:spam -in:trash"
     #: Upper bound a client may request in one sync. Bounds the work a single

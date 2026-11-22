@@ -735,7 +735,7 @@ def test_the_authorization_url_carries_state_scope_and_pkce_challenge(
     assert query["response_type"] == ["code"]
     assert query["client_id"] == [google_settings.google_client_id]
     assert query["redirect_uri"] == [google_settings.google_redirect_uri]
-    assert query["scope"] == [GMAIL_SCOPE]
+    assert query["scope"] == ["https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"]
     assert query["state"] == ["state-nonce"]
     assert query["code_challenge"] == ["challenge-value"]
     assert query["code_challenge_method"] == ["S256"]

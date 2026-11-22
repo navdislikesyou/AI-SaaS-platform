@@ -77,7 +77,8 @@ async def get_activity_history(
         # ``user_id`` matches, so that backward‑compatible test configurations
         # (and administrators managing legacy data) are not broken.
         records = [
-            r for r in records
+            r
+            for r in records
             if r.get("user_id") == current_user.id
             and (
                 current_user.organization_id is None

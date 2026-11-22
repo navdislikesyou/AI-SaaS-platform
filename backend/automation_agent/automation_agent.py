@@ -1,7 +1,5 @@
-import json
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from automation_agent.llm.local_llm import LocalLLM
 
@@ -22,20 +20,12 @@ ONLINE_VENUE = "Online meeting"
 
 
 class AutomationAgent:
-
-    def __init__(self, employees_file=None, llm=None):
+    def __init__(self, llm=None, employees: list | None = None):
 
         self.llm = llm or LocalLLM()
-
-        if employees_file is None:
-            employees_file = (
-                Path(__file__).parent
-                / "data"
-                / "employees.json"
-            )
-
-        with open(employees_file, "r", encoding="utf-8") as file:
-            self.employees = json.load(file)
+        # Optional in-memory roster for tests/legacy callers. The authoritative
+        # production source is the organization roster resolved by AutomationService.
+        self.employees = employees
 
     def parse_instruction(self, instruction, employees=None):
 
@@ -189,26 +179,24 @@ class AutomationAgent:
         matched = set()
 
         for employee in employees:
+            name = str(employee.get("name") or employee.get("full_name") or "").lower()
 
-            name = employee["name"].lower()
+            if not name:
+                continue
 
             if name in text:
-
-                attendees.append(employee["name"])
+                attendees.append(employee.get("name") or employee.get("full_name"))
 
                 matched.add(name)
 
         for employee in employees:
+            name = str(employee.get("name") or employee.get("full_name") or "").lower()
 
-            name = employee["name"].lower()
-
-            if name in matched:
-
+            if not name or name in matched:
                 continue
 
             if name.split()[0] in text:
-
-                attendees.append(employee["name"])
+                attendees.append(employee.get("name") or employee.get("full_name"))
 
                 matched.add(name)
 
@@ -227,11 +215,9 @@ class AutomationAgent:
         recipients = []
 
         for attendee in attendees:
-
             for employee in employees:
-
-                if employee["name"] == attendee:
-
+                emp_name = employee.get("name") or employee.get("full_name")
+                if emp_name == attendee:
                     recipients.append(employee)
 
                     break
@@ -241,32 +227,41 @@ class AutomationAgent:
     def _roster(self, employees):
         """Return the employee list to work against.
 
-        A caller may pass a different directory for one request. That roster is
-        threaded as an argument through parsing, recipient lookup, and drafting
+        A caller may pass a different employee list for one request. That roster
+        is threaded as an argument through parsing, recipient lookup, and drafting
         rather than assigned to ``self.employees``, because the service is shared
         across concurrent requests and swapping instance state would let one
         request resolve recipients from another request's directory.
 
         Args:
-            employees: An employee list to use, or None for the packaged
-                directory loaded at construction.
+            employees: An employee list to use (must be provided by the service).
 
         Returns:
             The employee list to iterate.
+
+        Raises:
+            ValueError: If ``employees`` is None, since the packaged directory
+                has been removed and a roster must always be supplied.
         """
 
-        return self.employees if employees is None else employees
+        if employees is None:
+            if self.employees is not None:
+                return self.employees
+            raise ValueError("Roster must be supplied; packaged directory has been removed.")
+        return employees
 
     def generate_email(self, meeting, recipients):
 
         attendee_names = ", ".join(
-            person["name"] for person in recipients
+            (person.get("name") or person.get("full_name") or "") for person in recipients
         )
 
         # A draft addressed to a resolved employee greets them by name. With
         # no resolved recipient there is no name to use, so the generic Team
         # greeting stands rather than inventing one.
-        greeting = f"Dear {recipients[0]['name']}," if recipients else "Dear Team,"
+        first_recipient = recipients[0] if recipients else {}
+        first_name = first_recipient.get("name") or first_recipient.get("full_name")
+        greeting = f"Dear {first_name}," if first_name else "Dear Team,"
 
         # The invitation text follows the parsed event type. An orientation
         # is not a project meeting, and writing it as one loses the point of
@@ -369,9 +364,7 @@ def _online_venue(text):
     """
 
     for marker, venue in ONLINE_VENUE_MARKERS:
-
         if marker in text:
-
             return venue
 
     return None

@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import AgentAdapter
 from app.agents.registry import AgentRegistry
 from app.api.deps import (
+    get_async_session_optional,
     get_current_user_from_token_optional_principal,
     get_orchestrator,
     get_registry,
@@ -161,6 +163,7 @@ async def execute_agent_operation(
     user: User | None = Depends(get_current_user_from_token_optional_principal),
     orchestrator: Orchestrator = Depends(get_orchestrator),
     settings: Settings = Depends(get_settings_dep),
+    session: AsyncSession | None = Depends(get_async_session_optional),
 ) -> APIResponse[AgentExecuteResponse]:
     """Execute one operation against one agent.
 
@@ -195,6 +198,7 @@ async def execute_agent_operation(
         request.operation,
         request.payload,
         user_context=user_context,
+        session=session,
     )
     return APIResponse(
         data=result,

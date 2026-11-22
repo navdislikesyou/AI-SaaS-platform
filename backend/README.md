@@ -2,8 +2,7 @@
 
 FastAPI backend foundation for the AI SaaS Platform.
 
-**All three agents are implemented and live in this repository.** Knowledge and
-Automation run synchronously through `POST /api/v1/agents/execute`. The
+**All four agents are implemented and live in this repository.** Knowledge, Automation, and Employee Insights run synchronously through `POST /api/v1/agents/execute` (Employee Insights also exposes `/api/v1/employee-insights/*`). The
 Performance Analyzer is implemented too, but its analysis is CPU-bound and long
 running, so it is served through its own background-job API at
 `/api/v1/performance/jobs` instead of the generic execution endpoint.
@@ -15,7 +14,8 @@ fails to initialize.
 The backend also implements JWT authentication with rotating HttpOnly refresh
 cookies, organisation-scoped multi-tenancy, role-based access control
 (`employee` / `manager` / `admin`), user management, database persistence
-(SQLAlchemy 2.x + Alembic), browser upload APIs for all three agents, and an
+(SQLAlchemy 2.x + Alembic), browser upload APIs for the agents, an
+employee directory service with organization-scoped resolution, and an
 activity-history feed.
 
 ## Agents
@@ -23,8 +23,9 @@ activity-history feed.
 | Agent | Purpose | Status | Capabilities | Served at |
 |---|---|---|---|---|
 | `knowledge` | RAG question answering over PDF/DOCX/TXT documents | Connected when enabled | `ingest_document`, `query` | `/agents/execute` |
-| `automation` | Interprets productivity requests and drafts actions | Connected when enabled | `draft_action` | `/agents/execute` |
+| `automation` | Interprets productivity requests and drafts actions | Connected when enabled | `draft_action`, `draft_html`, `send_email` | `/agents/execute` |
 | `performance` | Data analytics: KPIs, comparisons, trends, insights | Connected when enabled | `[]` (see below) | `/performance/jobs` |
+| `employee_insights` | Employee feedback sentiment analysis and analytics | Connected when enabled | `extract_feedback`, `employee_summary`, `sync_gmail` | `/agents/execute`, `/employee-insights/*` |
 
 Capabilities listed above are the ones that actually work through that agent's
 endpoint. Anything not listed returns 404 rather than being advertised and then
@@ -37,7 +38,10 @@ points at the job API instead.
 
 Automation drafts actions only. It performs no external side effects: no email
 is sent, no calendar event is created. There is no Gmail, Google Calendar, or
-scheduling integration in this repository.
+scheduling integration in this repository. The Automation Agent supports
+organization-scoped employee directory resolution and source-aware recipient
+selection, but email sending requires explicit manager/admin confirmation through
+the backend `send_email` operation.
 
 The Performance Analyzer is modelled strictly as data analytics, with no
 predictive or classification behaviour. It runs 9 analyzers over a dataset and
@@ -58,9 +62,9 @@ python bootstrap_admin.py --email admin@example.com --password 'YourStrongPass1!
 ```
 
 `bootstrap_admin.py` is a one-time CLI that creates the first organisation and
-administrator. It takes the password as an argument and never stores it in
-plain text; only the Argon2 hash is written. Re-running it is safe: it refuses
-to create a second administrator for the same organisation.
+administrator. It takes the password as an argument and never stores it in plain
+text; only the Argon2 hash is written. Re-running it is safe: it refuses to
+create a second administrator for the same organisation.
 
 Auth and database dependencies live in `requirements.txt`, so a plain API
 install is enough to run every route in this document. The ML and
@@ -69,7 +73,7 @@ document-processing packages the agents need are installed separately from
 
 ### Agent prerequisites
 
-All three agents need extra dependencies. Without them the API still runs; the
+All four agents need extra dependencies. Without them the API still runs; the
 agents simply report unavailable.
 
 ```bash
@@ -103,8 +107,8 @@ PERFORMANCE_AGENT_ENABLED=true
 
 Startup never fails because of an agent. If construction raises — missing
 dependency, unreachable Ollama, unreadable Chroma directory — the adapter logs
-the traceback and reports unavailable, and that agent's calls return 503.
-Check the startup log for `knowledge_adapter_connect_failed` or
+the traceback and reports unavailable, and that agent's calls return 503. Check
+the startup log for `knowledge_adapter_connect_failed` or
 `automation_adapter_connect_failed` to see why.
 
 Verify the agent is live:
@@ -143,6 +147,13 @@ not a real service. Tests that genuinely need a live agent are opt-in and skip
 unless the corresponding `*_AGENT_ENABLED` flag is set; see
 `tests/test_agent_integration.py`.
 
+The **Automation directory resolution tests** (`test_automation_directory_resolution.py`) verify
+organization-scoped roster resolution, inactive employee exclusion, and the
+strict packaged-directory fallback behavior.
+
+The **Tenant isolation tests** (`test_tenant_isolation.py`) verify that
+Organization A never receives Organization B's employees.
+
 ## Lint and format
 
 ```bash
@@ -156,8 +167,8 @@ mypy app
 
 There are two execution paths, because the agents differ in how long they take.
 
-```
-Synchronous agents (Knowledge, Automation):
+```text
+Synchronous agents (Knowledge, Automation, Employee Insights):
 
 Frontend
    ↓
@@ -174,18 +185,6 @@ Adapters  (app/agents/adapters — integration boundary)
 Agent services  (knowledge_agent/, automation_agent/ — dict-in, dict-out)
    ↓
 Real agents  (knowledge_agent/, automation_agent/ in this repo)
-
-Background-job agent (Performance):
-
-Frontend
-   ↓
-Routes  (app/api/v1/performance.py — POST /jobs, GET /jobs/{id})
-   ↓
-JobManager  (app/services/job_manager.py — lifecycle, in-process store)
-   ↓
-PerformanceService  (performance_agent/service.py — dict-in, dict-out)
-   ↓
-Analyzers / visualization / insight engines  (in this repo)
 ```
 
 Layering rules: routers never import agent implementations. The orchestrator
@@ -206,11 +205,12 @@ app/
 │       ├── health.py    /health, /ready
 │       ├── auth.py      /auth/login, /auth/refresh, /auth/logout, /auth/me
 │       ├── users.py     /users (create, list, roles, activate, managers)
-│       ├── agents.py    /agents, /agents/{name}, /agents/execute
 │       ├── activity.py  /activity-history
 │       ├── knowledge.py /knowledge/documents (multipart upload + list)
 │       ├── automation.py /automation/directories (upload, list, detail)
-│       └── performance.py  /performance/datasets, /performance/jobs, artifacts
+│       ├── agents.py    /agents, /agents/{name}, /agents/execute
+│       ├── performance.py  /performance/datasets, /performance/jobs, artifacts
+│       └── activity.py  /activity-history
 ├── core/
 │   ├── config.py        pydantic-settings, no os.environ elsewhere
 │   ├── database.py      async engine, session factory, lifespan dispose
@@ -277,11 +277,13 @@ Auth routes:
 | `POST /api/v1/auth/logout` | refresh cookie + trusted `Origin` | Revokes the refresh token and clears the cookie. |
 | `GET /api/v1/auth/me` | Bearer access token | Returns the authenticated user's profile. |
 
-The first administrator is created out-of-band with `bootstrap_admin.py`;
-there is no public self-service registration. Admins create further users
-through `POST /api/v1/users/`.
+The first administrator is created out-of-band with `bootstrap_admin.py`; there is
+no public self-service registration. Admins create further users through
+`POST /api/v1/users/`.
 
-### `GET /api/v1/health`
+### API Endpoints (selected)
+
+#### `GET /api/v1/health`
 
 Liveness. No auth, no dependencies checked.
 
@@ -295,7 +297,7 @@ Liveness. No auth, no dependencies checked.
 }
 ```
 
-### `GET /api/v1/ready`
+#### `GET /api/v1/ready`
 
 Readiness of backend components only. Unconnected agents do **not** fail this
 check, since the container is healthy even without agents. Returns 503 when a
@@ -305,65 +307,30 @@ backend component is missing.
 {
   "status": "ready",
   "checks": [
-    { "name": "registry", "ready": true, "detail": "3 agents registered" },
-    { "name": "agents", "ready": true, "detail": "0 of 3 agents connected" }
+    { "name": "registry", "ready": true, "detail": "4 agents registered" },
+    { "name": "agents", "ready": true, "detail": "0 of 4 agents connected" }
   ],
   "timestamp": "2026-01-01T00:00:00Z"
 }
 ```
 
-### `GET /api/v1/agents`
+#### `GET /api/v1/agents`
 
 Catalog. The frontend can build its agent list from this alone. Note that
 `performance` appears here with `capabilities: []`: it is listed so the client
 knows the agent exists, but its operations live at `/performance/jobs`.
 
-The example below is a **mixed configuration**: `KNOWLEDGE_AGENT_ENABLED=true`
-and `AUTOMATION_AGENT_ENABLED=true`, with `PERFORMANCE_AGENT_ENABLED=false`.
-That is why `available_count` is 2 rather than 3. Availability is per agent and
-follows each flag independently:
-
 | Flags | `available_count` | `performance` status |
 |---|---|---|
-all three false | 0 | `not_connected` |
-Performance flag false, others true | 2 | `not_connected` |
-all three true | 3 | `ready` |
+| all three false | 0 | `not_connected` |
+| Performance flag false, others true | 2 | `not_connected` |
+| all three true | 3 | `ready` |
 
-```json
-{
-  "success": true,
-  "data": {
-    "agents": [
-      {
-        "name": "knowledge",
-        "display_name": "Knowledge",
-        "available": true,
-        "capabilities": ["ingest_document", "query"],
-        "status": "ready",
-        "description": "Retrieval-augmented question answering ..."
-      },
-      {
-        "name": "performance",
-        "display_name": "Performance",
-        "available": false,
-        "capabilities": [],
-        "status": "not_connected",
-        "description": "Data analytics over datasets ... Served as background jobs at POST /api/v1/performance/jobs, not through this endpoint."
-      }
-    ],
-    "total": 3,
-    "available_count": 2
-  },
-  "message": "3 agents registered.",
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
-
-### `GET /api/v1/agents/{agent_name}`
+#### `GET /api/v1/agents/{agent_name}`
 
 One agent's metadata. Unknown name → 404.
 
-### `POST /api/v1/agents/execute`
+#### `POST /api/v1/agents/execute`
 
 Generic execution for the synchronous agents. The client names the agent and
 operation explicitly; v1 does no LLM-based routing. Operations:
@@ -372,8 +339,6 @@ operation explicitly; v1 does no LLM-based routing. Operations:
 |---|---|
 | `knowledge` | `ingest_document`, `query` |
 | `automation` | `draft_action` |
-
-`performance` is not served here. Its operations run as jobs — see below.
 
 Request:
 
@@ -422,151 +387,14 @@ Agent not connected, or an operation its endpoint does not serve → **503**:
 }
 ```
 
-Any request naming `performance` returns this, because the generic endpoint
-cannot run it. Use `/api/v1/performance/jobs` instead.
-
 Missing payload keys return **422**, not 502. Operation-specific input rules
 live in each adapter's `run()`, since `payload` is an arbitrary JSON object at
-the API boundary:
+the API boundary.
 
-```json
-{
-  "success": false,
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Operation 'query' requires: question.",
-    "details": {
-      "agent": "knowledge",
-      "operation": "query",
-      "missing": ["question"]
-    }
-  },
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
-
-### `POST /api/v1/users/`
-
-Create a user in the authenticated admin's organisation. Admin role required.
-Query params: `email`, `full_name`, optional `role` (default `employee`) and
-`manager_id`. The password is generated server-side; the response includes
-`temporary_password` exactly once so it can be delivered to the new user. Only
-the Argon2 hash is stored. A duplicate email is **409**; a `manager_id` outside
-the organisation is **409**.
-
-### `GET /api/v1/users/`
-
-List active users in the caller's organisation. Any authenticated user
-(employee or higher). Employees see colleagues; managers and admins see their
-team.
-
-### `PATCH /api/v1/users/{user_id}?new_role=…`
-
-Change a user's role. Admin only. The last active administrator in an
-organisation cannot be demoted — the guard counts the target as well, so an
-admin cannot demote themselves into a leaderless organisation. A role change
-bumps the target's `token_version`, revoking their outstanding tokens.
-
-### `POST /api/v1/users/{user_id}/activate` and `/deactivate`
-
-Re-enable or disable an account. Admin only, same organisation. Deactivation
-bumps `token_version`, so the user's existing access and refresh tokens stop
-working immediately.
-
-### `PATCH /api/v1/users/{user_id}/manager?manager_id=…`
-
-Assign or clear a user's manager. Manager or admin. The manager must belong to
-the same organisation. Omit `manager_id` (or send `null`) to remove it.
-
-All user routes are organisation-scoped: a user in another organisation is
-reported as **404** or refused with **409** depending on the route, never
-mutated, and never confirmed to exist.
-
-### `POST /api/v1/knowledge/documents`
-
-Upload a document and index it into the Knowledge vector store. `multipart/form-data`
-with a single `file` field. Accepts **PDF, DOCX, TXT**.
-
-Returns **201 Created** only after the document has been extracted, chunked,
-embedded, and added to Chroma:
-
-```json
-{
-  "success": true,
-  "data": {
-    "document": {
-      "document_id": "9f2c1d0b4a7e4c1f9b3d5e7a8c0d2f41",
-      "filename": "Employee Handbook.pdf",
-      "extension": ".pdf",
-      "size_bytes": 1843200,
-      "status": "indexed",
-      "chunk_count": 142,
-      "uploaded_at": "2026-10-13T14:22:01+05:30"
-    },
-    "message": "'Employee Handbook.pdf' indexed as 142 chunks."
-  },
-  "message": null,
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
-
-No filesystem path appears in the response. The stored filename is internal and
-is never returned.
-
-Validation happens in three layers, because each catches a different lie:
-
-| Check | Rejects with |
-|---|---|
-| Extension allowlist (`.pdf`, `.docx`, `.txt`) | 422 `VALIDATION_ERROR` |
-| Size limit, enforced while streaming | 422 with `details.max_bytes` |
-| Content signature and structure | 422 `VALIDATION_ERROR` |
-| Zero bytes, or text with no content | 422 `VALIDATION_ERROR` |
-
-The stored filename is generated server-side as `<uuid4>_<sanitized stem><ext>`
-and opened with `O_EXCL`, so a client cannot choose where a file lands, cannot
-traverse out of the upload directory, and cannot overwrite an earlier upload.
-
-If ingestion fails, the stored file is deleted and the document is recorded in
-the manifest with `"status": "failed"` rather than `"indexed"`. A failed upload
-is never reported as a success, and never appears as a selectable document.
-
-Status codes: 201 indexed, 422 rejected or produced no indexable text, 502 agent
-failed, 503 Knowledge Agent not connected, 504 indexing timed out.
-
-### `GET /api/v1/knowledge/documents`
-
-List documents this instance has ingested, newest first. An empty manifest
-returns an empty list rather than an error.
-
-### Upload storage is a local MVP
-
-Uploaded files live in `KNOWLEDGE_UPLOAD_DIR` on the machine running the API,
-and metadata lives in a JSON manifest beside them. Both are gitignored. This is
-a deliberate development choice, **not** deployment-ready storage:
-
-- Files are not shared between instances, so a multi-worker or multi-host
-  deployment will index a document on one instance and not find it on another.
-- Storage is bounded only by disk. There is no quota, no retention policy, and
-  no cleanup job.
-- The manifest is a single JSON file, so concurrent writes across processes are
-  not safe.
-
-A deployment needs persistent shared storage (object storage or a volume) and a
-real metadata store. Only `app/services/document_upload.py` and
-`app/services/document_manifest.py` need to change; the router and the agent
-pipeline do not, because the agent only ever sees a path.
-
-There is **no delete operation**. A document can be uploaded and listed, but
-nothing removes it from disk or from Chroma. Do not describe a document as
-deleted or removed unless that endpoint is implemented.
-
-### `POST /api/v1/automation/directories`
+#### `POST /api/v1/automation/directories`
 
 Upload an employee directory and validate every record. `multipart/form-data`
 with a single `file` field. Accepts **JSON** and **CSV**.
-
-Returns **201 Created** only after every record passed validation, and includes a
-preview of the first 20 employees so the upload can be confirmed before use:
 
 ```json
 {
@@ -599,7 +427,7 @@ XLSX is deliberately **not** supported. Reading it needs a dependency that is
 not part of an API-only install, and adding one would make the Automation
 adapter unavailable on deployments that never upload a spreadsheet.
 
-Validation happens in four layers, because each catches a different problem:
+Validation happens in four layers:
 
 | Check | Rejects with |
 |---|---|
@@ -607,38 +435,31 @@ Validation happens in four layers, because each catches a different problem:
 | Size limit, enforced while streaming, and NUL bytes in the content | 422 with `details.max_bytes` |
 | Structure: JSON array of objects, CSV header with both columns | 422 `VALIDATION_ERROR` |
 | Per record: `name` and `email` present and non-blank, plausible email, no duplicate name, no duplicate email | 422 with `details.row` and `details.field` |
-| Empty directory, or more than `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | 422 `VALIDATION_ERROR` |
 
 Duplicate names are rejected rather than resolved: attendee matching falls back
 to a first name, so two people sharing one name would silently resolve every
 mention to the first record found.
 
 Error `details` carry the row index and field name, never the offending value and
-never a filesystem path. The stored filename is generated server-side as
-`<uuid4>_<sanitized stem><ext>` and opened with `O_EXCL`, so a client cannot
-choose where a file lands, cannot traverse out of the upload directory, and
-cannot overwrite an earlier upload. A file that fails validation is removed
-before the error is returned.
+never a filesystem path.
 
 Status codes: 201 accepted, 422 rejected, 503/504 not applicable (no agent runs).
 
-### `GET /api/v1/automation/directories`
+#### `GET /api/v1/automation/directories`
 
 List directories this instance has accepted, newest first. An empty manifest
 returns an empty list rather than an error.
 
-### `GET /api/v1/automation/directories/{directory_id}`
+#### `GET /api/v1/automation/directories/{directory_id}`
 
 Return the directory summary and its full employee records, with an
 `employees_truncated` flag. An unknown id and an id whose stored file is gone
 are reported identically as **404 `DIRECTORY_NOT_FOUND`**, so the response never
-confirms whether a given identifier ever existed. A stored file that no longer
-parses returns **422**; it is never quietly ignored.
+confirms whether a given identifier ever existed.
 
-### Drafting against a selected directory
+#### `POST /api/v1/agents/execute` for Automation Agent
 
-`POST /api/v1/agents/execute` for the Automation Agent accepts one **optional**
-payload key alongside `instruction`:
+Accepts one **optional** payload key alongside `instruction`:
 
 ```json
 {
@@ -670,301 +491,30 @@ caller can tell which directory produced the recipients:
 `name` and `email` at the adapter boundary, so no other field from an uploaded
 roster can reach a client.
 
-**Parser limitations.** A directory changes *which employees* a request can
-resolve, nothing else. The parser still extracts a fixed set of fields — title,
-date, time, venue, attendees — by regex. There is **no department, role, or team
-parsing**, because the employee schema has never had those fields and the parser
-has no code path for them. Attendee matching is a case-insensitive substring
-match of the full name, then of the first name only; a bare surname resolves to
-nobody, which is deliberate.
+#### Employee Directory API
 
-**Draft-only.** A directory changes recipients, never behaviour. The agent still
-drafts and never sends mail or schedules a meeting.
+#### `GET /api/v1/automation/employees`
 
-### Employee directory storage is a local MVP
+List active employees in the authenticated organization. Requires manager or admin role.
 
-Uploaded directories live in `AUTOMATION_UPLOAD_DIR` on the machine running the
-API, and metadata lives in a JSON manifest beside them. Both are gitignored. This
-inherits every limitation of the Knowledge upload storage described above:
-files are not shared between instances, storage is bounded only by disk, and the
-single-file manifest is unsafe for concurrent cross-process writes. A deployment
-needs persistent shared storage and a real metadata store.
-
-There is **no delete operation** for an employee directory, for the same reason
-there is none for a document.
-
-### `POST /api/v1/performance/datasets`
-
-Upload a dataset from a browser. Returns **201 Created** with the id that
-identifies it. That id is what a job request refers to; the stored path is never
-returned.
-
-Accepted extensions are `.csv` and `.xlsx`. `.xls` is **not** accepted: the
-loader routes it to the `xlrd` engine, which is not a dependency, so it would be
-accepted here only to fail later as an opaque job error. It is refused up front
-with a message that names the formats that do work.
-
-The file is streamed to disk with the size limit enforced **during** the write,
-so an oversized upload is abandoned rather than buffered, and a rejected upload
-leaves no file behind. After the write the file is read back through a **bounded**
-preview — header plus five rows — which proves the parser can open it and yields
-its real column names without loading the whole dataset. An XLSX must also be a ZIP
-container, so a CSV renamed `.xlsx` is caught before the parser sees it.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/performance/datasets \
-  -F 'file=@Financials.csv'
+```http
+GET /api/v1/automation/employees
+Authorization: Bearer <jwt-token>
 ```
 
-```json
-{
-  "success": true,
-  "data": {
-    "dataset": {
-      "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071",
-      "filename": "Financials.csv",
-      "format": "csv",
-      "size_bytes": 20480,
-      "status": "ready",
-      "column_names": ["date", "sales", "profit"],
-      "column_count": 3,
-      "is_sample": false,
-      "available": true,
-      "uploaded_at": "2026-01-01T00:00:00Z"
-    },
-    "message": "'Financials.csv' is ready to analyse."
-  },
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
+Returns active employees filtered by the authenticated user's organization.
 
-`column_names` are **normalized** — trimmed, lowercased, spaces turned into
-underscores — because that is what the analyzers look for, so what the client is
-told matches what a later job will actually use.
+### Employee Directory API (Phase 4, updated)
 
-Rejected with 422 `VALIDATION_ERROR`: an unsupported extension, a file over
-`PERFORMANCE_MAX_UPLOAD_BYTES`, an empty file, a mislabelled container, a CSV that
-is not UTF-8, a header row that names no column, a file that holds a header but no
-data rows, or a file the parser cannot open. Messages never contain a filesystem
-path or a traceback.
+> Phase 4 final: AutomationAgent recipient selection uses authenticated organization active `User` records by UUID. No packaged `employees.json` fallback. No AutomationAgent uploaded-directory recipient selection. `/automation/directories` remains shared legacy infrastructure pending dependency analysis.
 
-### `GET /api/v1/performance/datasets`
+| Endpoint | Method | Auth | RBAC | Description |
+|---|---|---|---|---|
+| `/api/v1/automation/employees` | `GET` | JWT required | Manager/Admin | List active users in the authenticated user's organization. Organization ID is derived from the authenticated principal; client-supplied IDs are ignored. |
 
-List the datasets a job may run against: the packaged sample first, then this
-instance's uploads, newest first. Also reports the server's own size limit and
-accepted formats so a client does not have to hardcode them.
+Response: 200 with list of active users, 403 if role insufficient, 401 if no token.
 
-```json
-{
-  "datasets": [
-    {
-      "dataset_id": "sample",
-      "filename": "Financials_standardized.csv",
-      "format": "csv",
-      "is_sample": true,
-      "available": true
-    }
-  ],
-  "total": 1,
-  "max_upload_bytes": 26214400,
-  "supported_extensions": [".csv", ".xlsx"]
-}
-```
-
-### `POST /api/v1/performance/jobs`
-
-Submit a Performance Analyzer job. Returns **202 Accepted** immediately; the
-analysis runs on a worker thread while the client polls. Supported operations:
-`load_dataset`, `compute_kpis`, `compare_periods`, `analyze`, `visualize`.
-
-A job names its dataset in one of two ways, and exactly one must be present.
-
-**`dataset_id` — preferred.** An id from the upload route, or the reserved value
-`sample` for the packaged dataset. The server resolves the id to a path it
-controls, so no client-supplied string is ever used as a filesystem path. An
-unknown id, a tampered id, or an id whose file was deleted fails the request with
-404 `DATASET_NOT_FOUND` **before a job is created**. There is no fallback: if the
-dataset cannot be resolved, no job runs, because silently analysing a different
-file than the one selected would report success for the wrong data.
-
-```json
-{
-  "operation": "analyze",
-  "dataset_id": "6a1f2c8e9d0b4c7f8a1b2c3d4e5f6071"
-}
-```
-
-**`file_path` — the pre-existing server-side workflow.** A path on the **server**,
-not an upload, retained for callers that index a file already on disk. Relative
-paths resolve from `backend/`. Supplying both references is rejected rather than
-resolved.
-
-```json
-{
-  "operation": "analyze",
-  "file_path": "performance_agent/data/Financials_standardized.csv"
-}
-```
-
-Response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "job_id": "b1c4b7451429488dac207595220b6e36",
-    "status": "queued",
-    "operation": "analyze",
-    "created_at": "2026-01-01T00:00:00Z"
-  },
-  "message": "Performance job created.",
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
-
-Operation behaviour:
-
-| Operation | Returns |
-|---|---|
-| `load_dataset` | Dataset metadata: row count, column count, column names. Never the dataset itself. |
-| `compute_kpis` | Headline KPI blocks: totals, margins, target achievement. |
-| `compare_periods` | Period comparison across consecutive years on overlapping months. |
-| `analyze` | All 9 analyzers plus business insights. No charts written. |
-| `visualize` | Chart metadata. Renders 39 PNGs for the bundled dataset. |
-
-Note on `load_dataset`: the service reports the path it read, and the job runner
-reduces that to a bare filename before it reaches a client. An uploaded dataset
-lives under the upload directory, so returning the path as given would disclose
-the server's directory layout.
-
-### `GET /api/v1/performance/jobs/{job_id}`
-
-Poll a job. Unknown id → 404 `JOB_NOT_FOUND`.
-
-Lifecycle: `queued` → `running` → `completed` or `failed`.
-
-```json
-{
-  "success": true,
-  "data": {
-    "job_id": "b1c4b7451429488dac207595220b6e36",
-    "status": "completed",
-    "operation": "analyze",
-    "created_at": "2026-01-01T00:00:00Z",
-    "started_at": "2026-01-01T00:00:00Z",
-    "completed_at": "2026-01-01T00:00:08Z",
-    "result": { },
-    "error": null
-  },
-  "message": "Performance job 'completed'.",
-  "request_id": "5aa72667b1294e639f658fdd00d7a5cd"
-}
-```
-
-A failed job carries a sanitized `error` instead of a `result`:
-
-```json
-{
-  "job_id": "b1c4b7451429488dac207595220b6e36",
-  "status": "failed",
-  "result": null,
-  "error": "Input file not found: <path>"
-}
-```
-
-Filesystem paths are redacted from error text before it reaches a client. The
-unmodified text is logged server-side.
-
-### Performance visualizations
-
-Charts are written per job:
-
-```
-performance_agent/results/visualizations/jobs/<job_id>/visualizations/
-```
-
-The API returns metadata only — `name`, `filename`, `size_bytes`. It never
-exposes an absolute filesystem path.
-
-### `GET /api/v1/performance/jobs/{job_id}/artifacts/{filename}`
-
-Stream one PNG a `visualize` job generated. The filename must be one the job
-itself reported in its `visualizations` result, and the resolved path must sit
-inside that job's visualization directory. Ownership is enforced: a chart
-belonging to a job in another organisation is not downloadable, and an
-unauthenticated caller owns nothing. Unknown job, foreign job, and unknown
-artifact are all **404 `JOB_NOT_FOUND`**, so the response never distinguishes
-"this chart does not exist" from "you may not see it". No
-`Content-Disposition` filename is set, so the server path is never echoed.
-
-### Performance dataset storage is a local MVP
-
-Uploaded datasets are stored under `PERFORMANCE_UPLOAD_DIR`, separate from
-`performance_agent/data/`, so an upload can never overwrite a packaged sample.
-Stored names are generated (`<uuid>_<safe-stem><ext>`), written with an exclusive
-create, and the original filename is kept only as display metadata. The manifest is
-a single JSON file, as with the other uploads.
-
-This inherits every limitation of the upload storage described above, and it is
-worth stating plainly: uploaded datasets are **not shared between instances**, they
-do **not survive** replacing the container or the checkout because nothing backs
-the directory, and there is **no delete route**, so the directory grows until an
-operator removes files by hand. A deployment needs persistent shared storage and a
-real metadata store. Nothing else about the pipeline changes when that happens,
-because the job runner only ever receives a path.
-
-The sample dataset is the exception: it lives in the agent package and is resolved
-from configuration, so it is always available and always the same file.
-
-### Performance job limitations
-
-Job state is held in memory in the API process. There is no database, Redis, or
-Celery behind it. Two consequences:
-
-- Jobs do not survive a process restart.
-- Multi-worker deployments are not supported for polling. A client that polls a
-  job can reach a worker that never saw it, and receive 404.
-
-Treat the job API as single-process only until it is moved behind persistent
-storage.
-
-### `GET /api/v1/activity-history`
-
-Recent agent activity, newest first, capped at `MAX_RECORDS` (500). Each
-record is a lightweight metadata event — *that* an operation ran and how it
-ended — never the agent's output: no answers, no drafted bodies, no chart
-data, no filesystem paths. Query param `limit` (1–500, default 100).
-
-Records are written by the agent execution paths themselves, not through this
-router, so a client cannot fabricate history. When a token is present the
-result is scoped to that user's organisation. An unauthenticated caller
-receives an empty list, never the global record. The store is a JSON file on
-disk (a local MVP, process-local lock, atomic write) — same single-instance
-caveats as the upload manifests.
-
-### Error codes
-
-| HTTP | Code | Meaning |
-|---|---|---|
-| 401 | `INVALID_CREDENTIALS` | Login failed; never distinguishes unknown email from wrong password |
-| 401 | `HTTP_401` | Missing, expired, or revoked access token (from the auth dependency) |
-| 403 | `FORBIDDEN` | Authenticated, but the role or scope is insufficient |
-| 404 | `AGENT_NOT_FOUND` | No agent registered under that name |
-| 404 | `OPERATION_NOT_FOUND` | Agent does not advertise that operation |
-| 404 | `JOB_NOT_FOUND` | No Performance job with that id (also foreign/unknown artifact) |
-| 404 | `DIRECTORY_NOT_FOUND` | Unknown, deleted-file, or foreign employee directory |
-| 404 | `DATASET_NOT_FOUND` | Unknown, tampered, or no-longer-present dataset id |
-| 409 | `HTTP_409` | Conflict: duplicate email, cross-organisation manager, last-admin demotion |
-| 422 | `VALIDATION_ERROR` | Malformed body or failed schema validation |
-| 500 | `INTERNAL_ERROR` | Unexpected server fault (details never exposed) |
-| 502 | `AGENT_EXECUTION_FAILED` | Connected agent raised |
-| 503 | `AGENT_UNAVAILABLE` | Agent registered but not executable here |
-| 504 | `AGENT_TIMEOUT` | Agent exceeded its timeout |
-
-Every response carries an `X-Request-ID` header, and every body includes
-`request_id`. Send your own `X-Request-ID` to trace a request end to end.
-
-## Configuration
+### Configuration
 
 All settings live in `app/core/config.py`; no other module reads the
 environment. See `.env.example`. Notable keys:
@@ -977,29 +527,29 @@ environment. See `.env.example`. Notable keys:
 | `CORS_ORIGINS` | localhost:3000, :5173 | Allowed browser origins |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `console` | `LOG_FORMAT=json` for shipping |
 | `*_AGENT_ENABLED` | `false` | Set true to attempt constructing that agent at startup |
-| `KNOWLEDGE_CHROMA_PATH` | `knowledge_agent/data/chroma_db` | Vector store directory; relative paths resolve from `backend/` |
-| `KNOWLEDGE_UPLOAD_DIR` | `uploads/knowledge` | Where uploaded documents are stored; local disk, see below |
+| `KNOWLEDGE_CHROMA_PATH` | `knowledge_agent/data/chroma_db` | Vector store directory |
+| `KNOWLEDGE_UPLOAD_DIR` | `uploads/knowledge` | Where uploaded documents are stored |
 | `KNOWLEDGE_UPLOAD_MANIFEST_PATH` | `uploads/knowledge/documents.json` | Document metadata manifest |
-| `KNOWLEDGE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Upload size limit, enforced while streaming |
-| `AUTOMATION_UPLOAD_DIR` | `uploads/automation` | Where uploaded employee directories are stored; local disk, see below |
+| `KNOWLEDGE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Upload size limit |
+| `AUTOMATION_UPLOAD_DIR` | `uploads/automation` | Where uploaded employee directories are stored |
 | `AUTOMATION_UPLOAD_MANIFEST_PATH` | `uploads/automation/directories.json` | Employee directory metadata manifest |
-| `AUTOMATION_MAX_UPLOAD_BYTES` | `2097152` (2 MB) | Employee directory upload limit, enforced while streaming |
+| `AUTOMATION_MAX_UPLOAD_BYTES` | `2097152` (2 MB) | Employee directory upload limit |
 | `AUTOMATION_MAX_DIRECTORY_EMPLOYEES` | `5000` | Largest accepted employee count in one directory |
-| `PERFORMANCE_UPLOAD_DIR` | `uploads/performance` | Where uploaded datasets are stored; local disk, see below |
+| `PERFORMANCE_UPLOAD_DIR` | `uploads/performance` | Where uploaded datasets are stored |
 | `PERFORMANCE_UPLOAD_MANIFEST_PATH` | `uploads/performance/datasets.json` | Dataset metadata manifest |
-| `PERFORMANCE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Dataset upload limit, enforced while streaming |
-| `PERFORMANCE_SAMPLE_DATASET_PATH` | `performance_agent/data/Financials_standardized.csv` | Dataset exposed to browsers as `sample`; resolved server-side |
+| `PERFORMANCE_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | Dataset upload limit |
+| `PERFORMANCE_SAMPLE_DATASET_PATH` | `performance_agent/data/Financials_standardized.csv` | Dataset exposed to browsers as `sample` |
 | `KNOWLEDGE_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model tag used for generation |
 | `KNOWLEDGE_AGENT_TIMEOUT_SECONDS` | `300` | Per-operation budget; exceeding it returns 504 |
 | `AUTOMATION_AGENT_TIMEOUT_SECONDS` | `180` | Per-operation budget; exceeding it returns 504 |
-| `PERFORMANCE_AGENT_TIMEOUT_SECONDS` | `600` | Currently **not enforced** — see below |
+| `PERFORMANCE_AGENT_TIMEOUT_SECONDS` | `600` | Currently **not enforced** |
 | `AGENT_MAX_CONCURRENCY` | `4` | Agent operations running at once, across all agents |
-| `DATABASE_URL` | `sqlite:///./app.db` | SQLAlchemy URL; `sqlite:///` and `postgresql://` both accepted (async drivers) |
-| `JWT_SECRET_KEY` | *(empty)* | HS256 signing key for access tokens; **required in production** — startup refuses without it |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access-token lifetime; enforced on every request |
-| `TRUSTED_ORIGINS` | localhost:3000, :5173 | Origins allowed to call `/auth/refresh` and `/auth/logout` (cookie CSRF check) |
+| `DATABASE_URL` | `sqlite:///./app.db` | SQLAlchemy URL; `sqlite:///` and `postgresql://` both accepted |
+| `JWT_SECRET_KEY` | *(empty)* | HS256 signing key for access tokens; **required in production** |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access-token lifetime |
+| `TRUSTED_ORIGINS` | localhost:3000, :5173 | Origins allowed to call `/auth/refresh` and `/auth/logout` |
 | `SAMESITE` | `lax` | Refresh-cookie `SameSite` scope; `none` requires HTTPS |
 
 Enabling an agent makes the API *attempt* construction, not guarantee it. A
@@ -1017,24 +567,7 @@ only adds context switching. Performance jobs are bounded by the same
 Performance job API does not consult it: jobs run whether or not the catalog
 lists the agent as available.
 
-`PERFORMANCE_AGENT_TIMEOUT_SECONDS` is declared but **currently not enforced**.
-Nothing in the job runner reads it, and a job has no execution time limit: it
-runs until it completes or fails. There is therefore no 504 for a Performance
-job. The Knowledge and Automation timeouts above are enforced by the adapter
-base class and do return 504. Treat the Performance setting as reserved until a
-limit is added.
-
-Startup fails fast if `ENVIRONMENT=production` with `DEBUG=true`, a wildcard
-CORS origin, or an empty `JWT_SECRET_KEY`.
-
-## Logging
-
-Human-readable by default, JSON with `LOG_FORMAT=json`. Every record carries the
-request id. Logged: startup, per-request method/path/status/duration, agent
-registration, agent selection, agent execution outcome, and failures with full
-tracebacks server-side. Credentials and request bodies are not logged.
-
-## How the adapters work
+### How the adapters work
 
 `AgentAdapter` (`app/agents/base.py`) defines the integration seam:
 
@@ -1069,7 +602,7 @@ capabilities, reports `is_available() == False`, and its description points at
 the job API. It keeps the agent visible in the catalog without implying it can
 be run through `/agents/execute`.
 
-## Adding an agent
+### Adding an agent
 
 Knowledge and Automation follow these steps and are the reference.
 
@@ -1092,12 +625,29 @@ Knowledge and Automation follow these steps and are the reference.
 No route or schema changes are expected. `app/agents/adapters/` is the only
 backend directory that should need edits.
 
-Performance took a different route because it is slow enough that blocking a
-request on it is the wrong shape: a service class, then a `JobManager` and a
-job router, with no adapter `run()` override at all. An agent that takes seconds
-rather than milliseconds should follow that pattern instead.
+### Employee Directory Service (Phase 4, updated)
 
-## Not implemented (future phases)
+The backend provides an organization-scoped employee directory service:
+
+- **`list_active_users_by_organization()`** in `backend/app/services/employee_directory.py`
+  - Uses the existing SQLAlchemy User model; no new tables, columns, or migrations
+  - Filters users by `organization_id` derived from the authenticated principal
+  - Returns only active (`is_active=True`) users
+  - Strict fallback: when `organization_id` is present but no database session
+    is available, returns an empty roster (not the packaged fallback directory)
+  - When no `organization_id` is present, returns the packaged default directory
+
+- **Organization isolation**: User queries always filter by the authenticated
+  user's `organization_id`. Client-supplied organization IDs are never trusted.
+
+- **RBAC**: `GET /api/v1/automation/employees` requires manager or admin role.
+
+- **Session propagation**: Session is threaded through the complete call chain
+  (API → orchestrator → adapter → service). When the session is available,
+  organization-scoped queries use it. When absent with org context, strict
+  empty roster is returned.
+
+### Not implemented (future phases)
 
 Authentication, RBAC, user management, and database persistence are
 implemented (see above). Still pending:

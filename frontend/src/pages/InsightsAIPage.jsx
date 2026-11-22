@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Users, Mail, Bot, ShieldCheck, Activity, TrendingUp, BarChart3 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import { agentService } from '../services/agentService';
@@ -103,6 +103,7 @@ export default function InsightsAIPage() {
   const canManageGmail = hasRole(ROLES.MANAGER);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [connection, setConnection] = useState(null);
   // 'loading' | 'ready' | 'error'. Kept separate from `connection` so a failed
   // status call can never be mistaken for "still loading" and hang the card.
@@ -183,7 +184,15 @@ export default function InsightsAIPage() {
         : 'Gmail connection failed. Please try connecting again.'
     );
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+
+    // Safe return navigation: only internal allowlisted paths.
+    const ALLOWED_RETURN_PATHS = ['/agents/automation', '/insights', '/agents/insights'];
+    const stored = window.sessionStorage.getItem('axon_oauth_return_to');
+    window.sessionStorage.removeItem('axon_oauth_return_to');
+    if (stored && ALLOWED_RETURN_PATHS.includes(stored) && stored !== window.location.pathname) {
+      navigate(stored, { replace: true });
+    }
+  }, [searchParams, setSearchParams, navigate]);
 
   // Only managers read the shared mailbox status, so an employee never fires
   // a request the backend refuses with a 403.

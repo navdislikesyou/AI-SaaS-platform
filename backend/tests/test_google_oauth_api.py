@@ -226,7 +226,7 @@ async def test_starting_a_connection_returns_the_google_consent_url(
     url = urlparse(body["data"]["authorization_url"])
     query = parse_qs(url.query)
     assert url.netloc == "accounts.google.com"
-    assert query["scope"] == [GMAIL_SCOPE]
+    assert query["scope"] == ["https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"]
     assert query["access_type"] == ["offline"]
     assert query["code_challenge_method"] == ["S256"]
     assert body["data"]["expires_in_seconds"] > 0

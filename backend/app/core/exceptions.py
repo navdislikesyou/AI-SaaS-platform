@@ -241,6 +241,30 @@ class GoogleTokenUnavailableError(AppError):
     )
 
 
+class GmailScopeMissingError(AppError):
+    """Raised when a connected mailbox lacks a required Gmail scope."""
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "GMAIL_SCOPE_MISSING"
+
+    DEFAULT_MESSAGE = (
+        "The connected Gmail mailbox does not permit sending. Reconnect Gmail to grant send access."
+    )
+
+
+class EmailSendConflictError(AppError):
+    """Raised when an idempotency key cannot be safely reused."""
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "EMAIL_SEND_CONFLICT"
+
+
+class EmailSendUncertainError(EmailSendConflictError):
+    """Raised when a send's outcome could not be established."""
+
+    error_code = "EMAIL_SEND_UNCERTAIN"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the shared exception handlers to an application.
 

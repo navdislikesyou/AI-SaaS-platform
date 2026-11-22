@@ -1,4 +1,8 @@
-"""Validation and local storage for employee directories uploaded to the Automation Agent.
+"""Organization-scoped employee directory service.
+
+Provides a service function to list active users in an organization using the
+existing SQLAlchemy User model. This is the authoritative source of registered
+employees for authenticated organization workflows.
 
 The Automation Agent resolves attendee names against a directory of employee
 records. That directory ships inside the agent package, which is the right
@@ -51,9 +55,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import DirectoryNotFoundError, ValidationFailedError
+from app.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -1246,3 +1252,38 @@ def _as_timestamp(value: Any) -> datetime:
         logger.warning("automation_manifest_bad_timestamp value=%s", value)
 
         return datetime.fromtimestamp(0, tz=UTC)
+
+
+async def list_active_users_by_organization(
+    organization_id: str,
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """Return active users in an organization, suitable for recipient selection.
+
+    Args:
+        organization_id: The UUID of the organisation whose active users to list.
+        session: An async SQLAlchemy session.
+
+    Returns:
+        A list of dictionaries with ``id``, ``email``, ``full_name``, and ``role``
+        for each active user in the organisation, sorted by ``full_name``.
+        Returns an empty list when no active users exist.
+    """
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(User)
+        .where(User.organization_id == organization_id, User.is_active)
+        .order_by(User.full_name)
+    )
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": str(user.id),
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+        }
+        for user in users
+    ]

@@ -27,6 +27,8 @@ from app.core.database import init_engine, shutdown_engine
 from app.core.exceptions import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.models import Base
+from app.services.meeting_scheduler import MeetingScheduler
 from app.services.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         init_orchestrator(Orchestrator(registry))
         # Initialize database engine
         init_engine(resolved.database_url, echo=resolved.environment != "production")
+
+        # Ensure all tables exist (idempotent). Migrations remain the source of
+        # truth for schema evolution, but this keeps a fresh or partially
+        # migrated database usable without a manual alembic run.
+        from app.core.database import _engine
+
+        if _engine is not None:
+            async with _engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+        # Start the persistent meeting reminder scheduler.
+        scheduler = MeetingScheduler(settings=resolved)
+        await scheduler.start()
+        logger.info("meeting_scheduler_lifecycle_started")
         logger.info(
             "startup app=%s version=%s env=%s agents=%d",
             resolved.app_name,
@@ -124,6 +140,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         yield
         logger.info("shutdown app=%s", resolved.app_name)
+        # Stop the scheduler before disposing the database engine.
+        await scheduler.stop()
+        logger.info("meeting_scheduler_lifecycle_stopped")
         # Dispose of database engine
         await shutdown_engine()
 

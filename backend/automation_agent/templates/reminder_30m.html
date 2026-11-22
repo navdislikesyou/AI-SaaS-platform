@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+
+    <p>Dear {{ recipient_name }},</p>
+
+    <p>The following meeting starts in approximately 30 minutes.</p>
+
+    <p>
+        <b>Meeting:</b> {{ title }}<br>
+        {% if reason %}<b>Purpose:</b> {{ reason }}<br>{% endif %}
+        <b>Date:</b> {{ date }}<br>
+        <b>Time:</b> {{ time }}<br>
+        <b>Venue:</b> {{ venue }}
+    </p>
+
+    <p>Please make your way to the venue.</p>
+
+    <p>Regards,<br>{{ sender_name }}</p>
+
+</body>
+</html>

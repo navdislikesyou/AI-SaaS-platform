@@ -64,6 +64,7 @@ class Orchestrator:
         operation: str,
         payload: dict[str, Any],
         user_context: dict[str, Any] | None = None,
+        session: Any | None = None,
     ) -> AgentExecuteResponse:
         """Execute one operation on one agent.
 
@@ -73,6 +74,8 @@ class Orchestrator:
             payload: Operation-specific input.
             user_context: Optional dict with ``user_id``, ``organization_id``,
                 and ``role`` from the authenticated principal.
+            session: Optional request-scoped SQLAlchemy session for
+                organisation-scoped roster resolution.
 
         Returns:
             A standardized execution response.
@@ -86,7 +89,7 @@ class Orchestrator:
         """
         adapter = self.resolve(agent_name)
         started = time.perf_counter()
-        data = await adapter.execute(operation, payload, user_context=user_context)
+        data = await adapter.execute(operation, payload, user_context=user_context, session=session)
         duration_ms = (time.perf_counter() - started) * 1000
 
         return AgentExecuteResponse(
