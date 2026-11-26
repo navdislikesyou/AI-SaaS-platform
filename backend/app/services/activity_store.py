@@ -161,6 +161,10 @@ _OPERATION_DESCRIPTIONS: dict[tuple[str, str], tuple[str, str]] = {
         "Drafted automation action",
         "Automation action draft failed",
     ),
+    ("automation", "send_email"): (
+        "Sent an email",
+        "Email send failed",
+    ),
     ("performance", "load_dataset"): (
         "Described dataset",
         "Dataset description failed",

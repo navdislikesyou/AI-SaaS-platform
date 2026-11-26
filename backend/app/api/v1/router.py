@@ -8,14 +8,29 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import activity, agents, auth, automation, health, knowledge, performance, users
+from app.api.v1 import (
+    activity,
+    agents,
+    auth,
+    automation,
+    employee_insights,
+    google_oauth,
+    health,
+    knowledge,
+    meetings,
+    performance,
+    users,
+)
 
 api_router = APIRouter()
+api_router.include_router(employee_insights.router)
+api_router.include_router(google_oauth.router)
 api_router.include_router(health.router)
 api_router.include_router(agents.router)
 api_router.include_router(activity.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(automation.router)
+api_router.include_router(meetings.router)
 api_router.include_router(performance.router)
 api_router.include_router(auth.router)
 api_router.include_router(users.router)

@@ -57,6 +57,8 @@ EXECUTE_URL = "/api/v1/agents/execute"
 ADAPTER_SOURCE = Path("app/agents/adapters/automation.py")
 SERVICE_SOURCE = Path("automation_agent/service.py")
 AGENT_SOURCE = Path("automation_agent/automation_agent.py")
+RENDERING_SOURCE = Path("automation_agent/rendering.py")
+# DIRECTORY_SOURCE removed: packaged directory module deleted in org-centric refactor.
 
 #: Symbols that would indicate a side effect the agent is not allowed to have.
 FORBIDDEN_IMPORTS = {
@@ -92,8 +94,9 @@ class FakeAutomationService:
         Args:
             result: Value returned by ``execute``. Defaults to a drafted
                 meeting invitation.
-            error: Raised by ``execute`` when set, simulating an agent failure
-                such as an unreachable Ollama server.
+            error: Raised by ``execute`` and ``execute_html`` when set,
+                simulating an agent failure such as an unreachable Ollama
+                server.
         """
         self._result = result or {
             "meeting": {
@@ -106,15 +109,32 @@ class FakeAutomationService:
             "recipients": [{"name": "Navneet Verma", "email": "navneet@example.com"}],
             "email": "Dear Team,\n\nSprint planning is scheduled for 5 March.",
         }
+        self._html_result: dict[str, Any] = {
+            "meeting": {
+                "title": "Sprint Planning",
+                "date": "5 March",
+                "time": "10 AM",
+                "venue": "Conference Room A",
+                "attendees": ["Navneet Verma"],
+            },
+            "recipients": [{"name": "Navneet Verma", "email": "navneet@example.com"}],
+            "subject": "Meeting Invitation: Sprint Planning",
+            "html_body": "<!DOCTYPE html>\n<html><body>Sprint planning</body></html>",
+            "template": "meeting_invitation",
+            "employee_count": 4,
+        }
         self._error = error
         self.calls: list[str] = []
         self.rosters: list[list[dict[str, str]] | None] = []
+        self.html_calls: list[dict[str, Any]] = []
+        self.send_calls: list[dict[str, Any]] = []
 
     def execute(
         self,
         instruction: str,
         employees: list[dict[str, str]] | None = None,
         user_context: dict[str, Any] | None = None,
+        session: Any | None = None,
     ) -> dict[str, Any]:
         """Return the configured result.
 
@@ -135,6 +155,77 @@ class FakeAutomationService:
         if self._error is not None:
             raise self._error
         return self._result
+
+    def execute_html(
+        self,
+        instruction: str,
+        employees: list[dict[str, str]] | None = None,
+        user_context: dict[str, Any] | None = None,
+        template: str = "",
+        reason: str = "",
+        session: Any | None = None,
+    ) -> dict[str, Any]:
+        """Record the HTML draft call and return a rendered result.
+
+        Args:
+            instruction: Instruction forwarded by the adapter.
+            employees: Employee records the adapter resolved, or None when the
+                packaged directory is in use.
+            user_context: Principal context forwarded by the adapter.
+            template: Template name forwarded by the adapter. Blank means the
+                agent should fall back to its default.
+            reason: Purpose line forwarded by the adapter.
+
+        Returns:
+            A rendered HTML draft.
+
+        Raises:
+            Exception: The configured error, when one was set.
+        """
+        self.calls.append(instruction)
+        self.rosters.append(employees)
+        self.html_calls.append(
+            {
+                "instruction": instruction,
+                "employees": employees,
+                "user_context": user_context,
+                "template": template,
+                "reason": reason,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        return self._html_result
+
+    def send_email(
+        self,
+        payload: dict[str, Any],
+        user_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record the send call and return a successful send result.
+
+        Args:
+            payload: The validated request payload.
+            user_context: Principal context forwarded by the adapter.
+
+        Returns:
+            A successful send result.
+
+        Raises:
+            Exception: The configured error, when one was set.
+        """
+        self.send_calls.append({"payload": payload, "user_context": user_context})
+        if self._error is not None:
+            raise self._error
+        return {
+            "sent": True,
+            "message_id": "fake-message-id",
+            "gmail_message_id": "gmail-fake-id",
+            "recipients_count": len(payload.get("recipients", [])),
+            "subject": payload.get("subject"),
+            "status": "sent",
+            "idempotency_key": payload.get("idempotency_key"),
+        }
 
 
 @pytest.fixture
@@ -229,14 +320,15 @@ async def test_draft_action_returns_expected_dict_shape(
     result = await adapter.execute(
         "draft_action",
         {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"},
-            user_context=PRINCIPAL,
+        user_context=PRINCIPAL,
+        session=object(),
     )
 
     assert set(result) == {"meeting", "recipients", "email", "directory"}
     assert isinstance(result["meeting"], dict)
     assert isinstance(result["recipients"], list)
     assert isinstance(result["email"], str)
-    assert result["directory"]["source"] == "default"
+    assert result["directory"]["source"] == "organization"
     assert result["directory"]["directory_id"] is None
 
 
@@ -268,6 +360,210 @@ async def test_draft_action_returns_a_draft_rather_than_a_sent_receipt(
     forbidden = {"sent", "delivered", "message_id", "smtp_response", "calendar_event_id"}
     assert forbidden.isdisjoint(result.keys())
     assert result["email"]
+
+
+# --------------------------------------------------------------------------
+# HTML drafting (draft_html)
+# --------------------------------------------------------------------------
+
+
+async def test_draft_html_returns_expected_dict_shape(
+    adapter: AutomationAgentAdapter,
+) -> None:
+    """An HTML draft returns the rendered body alongside the parsed meeting."""
+    result = await adapter.execute(
+        "draft_html",
+        {"instruction": "Schedule sprint planning on 5 March at 10 AM with Navneet"},
+        user_context=PRINCIPAL,
+        session=object(),
+    )
+
+    assert set(result) == {
+        "meeting",
+        "recipients",
+        "subject",
+        "html_body",
+        "template",
+        "employee_count",
+        "directory",
+    }
+    assert isinstance(result["meeting"], dict)
+    assert isinstance(result["recipients"], list)
+    assert isinstance(result["subject"], str)
+    assert result["subject"]
+    assert result["html_body"].lstrip().startswith("<")
+    assert result["directory"]["source"] == "organization"
+    assert result["directory"]["directory_id"] is None
+
+
+async def test_draft_html_forwards_the_instruction_template_and_reason(
+    adapter: AutomationAgentAdapter,
+    service: FakeAutomationService,
+) -> None:
+    """The optional refinement keys reach the service alongside the instruction."""
+    await adapter.execute(
+        "draft_html",
+        {
+            "instruction": "Remind Navneet about sprint planning",
+            "template": "reminder_24h",
+            "reason": "Quarterly planning",
+        },
+        user_context=PRINCIPAL,
+    )
+
+    call = service.html_calls[0]
+
+    assert call["instruction"] == "Remind Navneet about sprint planning"
+    assert call["template"] == "reminder_24h"
+    assert call["reason"] == "Quarterly planning"
+    assert call["employees"] is None
+    assert call["user_context"] == PRINCIPAL
+
+
+async def test_draft_html_defaults_to_the_invitation_template(
+    adapter: AutomationAgentAdapter,
+    service: FakeAutomationService,
+) -> None:
+    """Omitting ``template`` asks the agent for its default rather than failing.
+
+    The default belongs to the agent, not the adapter, so the adapter forwards
+    a blank name and the service resolves it. That keeps one list of shipped
+    templates instead of two that could drift apart.
+    """
+    await adapter.execute(
+        "draft_html",
+        {"instruction": "Schedule a standup with Navneet"},
+        user_context=PRINCIPAL,
+    )
+
+    assert service.html_calls[0]["template"] == ""
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        pytest.param("invoice", id="unknown_name"),
+        pytest.param("meeting invitation", id="near_miss"),
+        pytest.param("../../etc/passwd", id="path_traversal"),
+    ],
+)
+async def test_draft_html_with_an_unknown_template_is_rejected(
+    adapter: AutomationAgentAdapter,
+    service: FakeAutomationService,
+    template: str,
+) -> None:
+    """A template the agent does not ship is a 422, not a 502 or a file lookup."""
+    with pytest.raises(ValidationFailedError) as exc_info:
+        await adapter.execute(
+            "draft_html",
+            {"instruction": "Schedule a standup", "template": template},
+            user_context=PRINCIPAL,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert service.html_calls == []
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        pytest.param("meeting_invitation", id="invitation"),
+        pytest.param("reminder_24h", id="reminder_24h"),
+        pytest.param("reminder_30m", id="reminder_30m"),
+    ],
+)
+async def test_every_shipped_template_is_accepted(
+    adapter: AutomationAgentAdapter,
+    service: FakeAutomationService,
+    template: str,
+) -> None:
+    """Each template the agent ships can be requested by name.
+
+    The names are written out rather than read from the renderer's own list so
+    that renaming or dropping a shipped template fails here instead of passing
+    against whatever the constant happens to say.
+    """
+    await adapter.execute(
+        "draft_html",
+        {"instruction": "Schedule a standup", "template": template},
+        user_context=PRINCIPAL,
+    )
+
+    assert service.html_calls[0]["template"] == template
+
+
+async def test_draft_html_keeps_internal_employee_fields_out_of_the_response() -> None:
+    """``employee_id``, ``role``, ``department``, and ``active`` stay internal.
+
+    The packaged directory now carries them, and an uploaded directory may
+    carry any columns its uploader supplied. Neither may travel back to the
+    browser: the drafting UI renders a name and an address, and nothing else.
+    """
+    service = FakeAutomationService(
+        result={
+            "meeting": {"title": "Standup", "date": "5 March", "time": "10 AM"},
+            "recipients": [
+                {
+                    "employee_id": "EMP001",
+                    "name": "Navneet Verma",
+                    "email": "navneet@example.com",
+                    "role": "Engineer",
+                    "department": "Product",
+                    "active": True,
+                }
+            ],
+            "subject": "Meeting Invitation: Standup",
+            "html_body": "<!DOCTYPE html><html><body>Standup</body></html>",
+            "template": "meeting_invitation",
+            "employee_count": 4,
+        }
+    )
+    adapter = AutomationAgentAdapter(service=service)
+
+    result = await adapter.execute(
+        "draft_html",
+        {"instruction": "Schedule a standup with Navneet"},
+        user_context=PRINCIPAL,
+    )
+
+    assert result["recipients"] == [{"name": "Navneet Verma", "email": "navneet@example.com"}]
+    assert result["directory"]["employee_count"] == 4
+
+
+async def test_draft_html_returns_a_draft_rather_than_a_sent_receipt(
+    adapter: AutomationAgentAdapter,
+) -> None:
+    """An HTML draft carries no delivery confirmation either.
+
+    Rendering markup does not make the operation a sending one; the safety
+    boundary is about transmission, not about the format of the body.
+    """
+    result = await adapter.execute(
+        "draft_html",
+        {"instruction": "Schedule a standup with Navneet"},
+        user_context=PRINCIPAL,
+    )
+
+    forbidden = {"sent", "delivered", "message_id", "smtp_response", "calendar_event_id"}
+    assert forbidden.isdisjoint(result.keys())
+    assert result["html_body"]
+
+
+async def test_draft_action_result_shape_is_unchanged(
+    adapter: AutomationAgentAdapter,
+) -> None:
+    """Adding ``draft_html`` did not add a key to the original operation.
+
+    Pinned separately from the shape test above so that a future key added to
+    both operations cannot quietly redefine what ``draft_action`` returns.
+    """
+    result = await adapter.execute(
+        "draft_action",
+        {"instruction": "Schedule a standup with Navneet"},
+        user_context=PRINCIPAL,
+    )
+
+    assert set(result) == {"meeting", "recipients", "email", "directory"}
 
 
 # --------------------------------------------------------------------------
@@ -389,21 +685,39 @@ def test_advertised_capabilities_match_implemented_operations() -> None:
 
     ``propose_action`` and ``execute_action`` were advertised before any
     implementation existed. They are pinned out here so re-adding them requires
-    a deliberate decision rather than passing silently.
+    a deliberate decision rather than passing silently. ``draft_html`` was
+    added as its own operation rather than as a flag on ``draft_action``, so
+    that a client written against the original draft keeps receiving the
+    original result shape.
     """
     adapter = AutomationAgentAdapter(service=FakeAutomationService())
 
-    assert adapter.capabilities() == ["draft_action"]
+    assert adapter.capabilities() == ["draft_action", "draft_html", "send_email"]
 
 
 async def test_every_advertised_capability_is_reachable(
     adapter: AutomationAgentAdapter,
 ) -> None:
     """Each advertised capability dispatches instead of raising 404."""
+    manager = {**PRINCIPAL, "role": "manager"}
     for operation in adapter.capabilities():
-        result = await adapter.execute(operation, {"instruction": "draft an invite"},
-            user_context=PRINCIPAL,
-    )
+        if operation == "send_email":
+            payload = {
+                "employee_ids": ["11111111-1111-1111-1111-111111111111"],
+                "subject": "Sprint planning",
+                "html_body": "<p>Hi</p>",
+                "confirm": True,
+                "idempotency_key": "idemp-1",
+            }
+            principal = manager
+            # send_email now requires org-scoped DB recipient validation; reaching
+            # validation (not 404 UnknownOperationError) proves reachability.
+            with pytest.raises(ValidationFailedError):
+                await adapter.execute(operation, payload, user_context=principal)
+            continue
+        payload = {"instruction": "draft an invite"}
+        principal = PRINCIPAL
+        result = await adapter.execute(operation, payload, user_context=principal)
         assert isinstance(result, dict)
 
 
@@ -449,6 +763,7 @@ def _imported_modules(path: Path) -> set[str]:
         pytest.param(ADAPTER_SOURCE, id="adapter"),
         pytest.param(SERVICE_SOURCE, id="service"),
         pytest.param(AGENT_SOURCE, id="agent"),
+        pytest.param(RENDERING_SOURCE, id="rendering"),
     ],
 )
 def test_no_mail_or_calendar_integration_is_imported(path: Path) -> None:
@@ -495,7 +810,11 @@ def test_agent_drafts_and_does_not_send() -> None:
     Checked by AST so the assertion holds without the agent's optional
     dependencies installed.
     """
-    methods = _defined_methods(AGENT_SOURCE) | _defined_methods(SERVICE_SOURCE)
+    methods = (
+        _defined_methods(AGENT_SOURCE)
+        | _defined_methods(SERVICE_SOURCE)
+        | _defined_methods(RENDERING_SOURCE)
+    )
 
     forbidden = {
         "send",
@@ -555,11 +874,8 @@ async def test_api_returns_the_draft_result(settings: Settings) -> None:
     assert data["agent"] == "automation"
     assert data["operation"] == "draft_action"
     assert set(data["data"]) == {"meeting", "recipients", "email", "directory"}
-    assert data["data"]["directory"] == {
-        "directory_id": None,
-        "source": "default",
-        "employee_count": None,
-    }
+    assert data["data"]["directory"]["source"] == "organization"
+    assert data["data"]["directory"]["directory_id"] is None
 
 
 @pytest.mark.parametrize(
@@ -653,6 +969,7 @@ async def test_api_returns_504_when_the_agent_times_out() -> None:
             instruction: str,
             employees: list[dict[str, str]] | None = None,
             user_context: dict[str, Any] | None = None,
+            session: Any | None = None,
         ) -> dict[str, Any]:
             time.sleep(0.5)
             return {"meeting": {}, "recipients": [], "email": "late"}
@@ -675,13 +992,66 @@ async def test_api_returns_504_when_the_agent_times_out() -> None:
 
 
 async def test_catalog_reports_the_real_capability_list(settings: Settings) -> None:
-    """The catalog exposes only the implemented operation."""
+    """The catalog exposes only the implemented operations."""
     adapter = AutomationAgentAdapter(service=FakeAutomationService())
 
     async with build_client(settings, [adapter]) as client:
         response = await client.get("/api/v1/agents")
 
     agent = response.json()["data"]["agents"][0]
-    assert agent["capabilities"] == ["draft_action"]
+    assert agent["capabilities"] == ["draft_action", "draft_html", "send_email"]
     assert agent["available"] is True
     assert agent["status"] == "ready"
+
+
+async def test_api_returns_the_html_draft_result(settings: Settings) -> None:
+    """``draft_html`` runs through the real stack and returns its own shape."""
+    adapter = AutomationAgentAdapter(service=FakeAutomationService())
+
+    async with build_client(settings, [adapter]) as client:
+        response = await client.post(
+            EXECUTE_URL,
+            json={
+                "agent": "automation",
+                "operation": "draft_html",
+                "payload": {
+                    "instruction": "Schedule sprint planning with Navneet",
+                    "template": "reminder_24h",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["operation"] == "draft_html"
+    assert set(data["data"]) == {
+        "meeting",
+        "recipients",
+        "subject",
+        "html_body",
+        "template",
+        "employee_count",
+        "directory",
+    }
+    assert data["data"]["directory"]["source"] == "organization"
+    assert data["data"]["directory"]["directory_id"] is None
+
+
+async def test_api_returns_422_for_an_unknown_template(settings: Settings) -> None:
+    """An unknown template name is reported as bad input, not as an agent failure."""
+    adapter = AutomationAgentAdapter(service=FakeAutomationService())
+
+    async with build_client(settings, [adapter]) as client:
+        response = await client.post(
+            EXECUTE_URL,
+            json={
+                "agent": "automation",
+                "operation": "draft_html",
+                "payload": {"instruction": "Schedule a standup", "template": "agenda"},
+            },
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert body["error"]["details"]["template"] == "agenda"

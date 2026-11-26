@@ -106,6 +106,26 @@ class Settings(BaseSettings):
         agent_max_concurrency: Upper bound on agent operations executing at
             once, across all agents. Real agents are CPU-bound, so this is
             deliberately far below anyio's default thread limiter of 40.
+        google_oauth_enabled: Master switch for the Employee Insights Gmail
+            connection. Off by default so an deployment without Google
+            credentials never advertises the feature.
+        google_client_id: OAuth client identifier from Google Cloud Console.
+        google_client_secret: OAuth client secret from Google Cloud Console.
+        google_token_encryption_key: Passphrase used to encrypt the stored
+            Gmail credentials at rest. Derived into a Fernet key with SHA-256.
+            Without it the connection routes report 503 rather than storing a
+            refresh token in plaintext.
+        google_redirect_uri: Redirect URI registered on the OAuth client. Must
+            match exactly, including the path, or Google rejects the flow.
+        frontend_base_url: Origin the callback redirects back to once consent
+            finishes.
+        gmail_readonly_scope: The single Gmail scope requested. Read-only, so
+            the application can never send, modify, or delete mail.
+        gmail_sync_default_query: Gmail search query applied when a sync
+            request omits one. Overridable per request.
+        gmail_sync_max_results: Largest ``max_results`` a sync may request.
+        google_oauth_state_ttl_seconds: Lifetime of a pending OAuth state
+            before it expires and can no longer be exchanged.
     """
 
     model_config = SettingsConfigDict(
@@ -135,6 +155,7 @@ class Settings(BaseSettings):
     knowledge_agent_enabled: bool = False
     automation_agent_enabled: bool = False
     performance_agent_enabled: bool = False
+    employee_insights_agent_enabled: bool = False
 
     knowledge_chroma_path: Path = Path("knowledge_agent/data/chroma_db")
     knowledge_embedding_model: str = "BAAI/bge-base-en-v1.5"
@@ -173,8 +194,52 @@ class Settings(BaseSettings):
     knowledge_agent_timeout_seconds: float = 300.0
     automation_agent_timeout_seconds: float = 180.0
     performance_agent_timeout_seconds: float = 600.0
+    employee_insights_agent_timeout_seconds: float = 180.0
 
     agent_max_concurrency: int = 4
+
+    # ---- Google OAuth (Employee Insights Gmail connection) ----
+    google_oauth_enabled: bool = False
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    #: Passphrase the stored Gmail credentials are encrypted with. Derived into
+    #: a Fernet key with SHA-256, so any non-empty value works. Rotating it
+    #: invalidates every stored connection and forces a reconnect.
+    google_token_encryption_key: str = ""
+    #: Must match a redirect URI registered on the OAuth client exactly,
+    #: including the path.
+    google_redirect_uri: str = "http://localhost:8000/api/v1/google/oauth/callback"
+    #: Origin the OAuth callback redirects back to after consent.
+    frontend_base_url: str = "http://localhost:5173"
+    gmail_readonly_scope: str = "https://www.googleapis.com/auth/gmail.readonly"
+    gmail_send_scope: str = "https://www.googleapis.com/auth/gmail.send"
+    #: Upper bound on the number of recipients a single send_email call may address.
+    gmail_send_max_recipients: int = Field(default=50, gt=0, le=500)
+    #: Upper bound on the HTML body size (bytes) a single send_email call may carry.
+    gmail_send_max_html_bytes: int = Field(default=500_000, gt=0, le=2_000_000)
+    #: Used when a sync request omits ``query``. Overridable per request.
+    gmail_sync_default_query: str = "newer_than:30d -in:spam -in:trash"
+    #: Upper bound a client may request in one sync. Bounds the work a single
+    #: operation can do, matching the Automation directory and upload limits.
+    gmail_sync_max_results: int = Field(default=100, gt=0, le=500)
+    #: How long a pending OAuth state survives before it expires.
+    google_oauth_state_ttl_seconds: int = Field(default=600, gt=0)
+
+    @property
+    def google_oauth_configured(self) -> bool:
+        """Report whether Google OAuth can serve a request.
+
+        Returns:
+            True when the feature is enabled and every credential it needs is
+            present. Missing anything degrades the routes to 503 rather than
+            failing at import time.
+        """
+        return bool(
+            self.google_oauth_enabled
+            and self.google_client_id
+            and self.google_client_secret
+            and self.google_token_encryption_key
+        )
 
     @property
     def backend_dir(self) -> Path:

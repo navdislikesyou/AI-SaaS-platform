@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -18,6 +18,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { roleLabel } from '../context/authRoles';
 import { useSystemHealth } from '../hooks/useSystemHealth';
+import { agentService } from '../services/agentService';
 
 export default function Navigation() {
   const { user, logout, isAdmin } = useAuth();
@@ -25,18 +26,37 @@ export default function Navigation() {
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [activeAgentCount, setActiveAgentCount] = useState(3);
 
   const handleLogout = async () => {
     await logout();
     navigate('/login', { replace: true });
   };
 
+  useEffect(() => {
+    let mounted = true;
+    agentService
+      .getAgents()
+      .then((agents) => {
+        if (mounted) {
+          const count = agents.filter((a) => a.isBackend && a.available).length;
+          setActiveAgentCount(count);
+        }
+      })
+      .catch(() => {
+        // Keep the fallback count if the backend is unreachable.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const navSections = [
     {
       title: 'Workspace',
       items: [
         { label: 'AI Command Center', href: '/orchestrator', icon: LayoutDashboard },
-        { label: 'AI Assistants', href: '/agents', icon: Cpu, badge: '3 Active' },
+        { label: 'AI Assistants', href: '/agents', icon: Cpu, badge: `${activeAgentCount} Active` },
       ],
     },
     {
@@ -45,6 +65,7 @@ export default function Navigation() {
         { label: 'Knowledge Assistant', href: '/agents/knowledge', icon: BookOpen, badge: 'Docs & Q&A', color: '#E8FF72' },
         { label: 'Task Automation', href: '/agents/automation', icon: Zap, badge: 'Drafts', color: '#4A9DC4' },
         { label: 'Performance Insights', href: '/agents/performance', icon: BarChart3, badge: 'Analytics', color: '#FF5A00' },
+        { label: 'Employee Insights', href: '/agents/insights', icon: Users, badge: 'New', color: '#8B5CF6' },
       ],
     },
     {
@@ -104,7 +125,10 @@ export default function Navigation() {
                       <span>{item.label}</span>
                     </div>
                     {item.badge && (
-                      <span className="saas-nav-link-badge" style={isActive && item.color ? { color: item.color } : {}}>
+                      <span
+                        className={`saas-nav-link-badge${item.badge === 'New' ? ' new-badge' : ''}`}
+                        style={isActive && item.color ? { color: item.color } : {}}
+                      >
                         {item.badge}
                       </span>
                     )}

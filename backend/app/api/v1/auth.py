@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,8 +29,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 #: reads the cookie, logout included: a cookie scoped to the refresh route
 #: alone is never sent to logout, so logout would leave the token valid.
 _COOKIE_PATH = "/api/v1/auth"
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 async def _get_refresh_token_from_cookie(request: Request) -> str | None:

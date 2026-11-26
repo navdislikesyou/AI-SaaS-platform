@@ -103,6 +103,13 @@ class AgentTimeoutError(AppError):
     error_code = "AGENT_TIMEOUT"
 
 
+class FeedbackPersistenceError(AppError):
+    """Raised when analyzed feedback cannot be committed to persistent storage."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "FEEDBACK_PERSISTENCE_FAILED"
+
+
 class JobNotFoundError(AppError):
     """Raised when a requested background job does not exist.
 
@@ -184,6 +191,78 @@ class ForbiddenError(AppError):
 
     status_code = status.HTTP_403_FORBIDDEN
     error_code = "FORBIDDEN"
+
+
+class GmailNotConnectedError(AppError):
+    """Raised when an organization has no authorized Gmail mailbox.
+
+    Maps to 409 Conflict rather than 403 or 422: the caller is permitted and
+    the request is well formed, but a precondition the operation depends on --
+    an existing connection -- is not satisfied. Reconnecting resolves it.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "GMAIL_NOT_CONNECTED"
+
+    #: The message is fixed. It must not reveal which mailboxes exist.
+    DEFAULT_MESSAGE = "No Gmail mailbox is connected for this organization."
+
+
+class GoogleOAuthNotConfiguredError(AppError):
+    """Raised when the Google OAuth client credentials are absent.
+
+    Maps to 503 Service Unavailable because retrying after an operator
+    configures the credentials can succeed. A missing encryption key is
+    reported the same way: the routes refuse to run rather than fall back to
+    storing a refresh token in plaintext.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "GOOGLE_OAUTH_NOT_CONFIGURED"
+
+    DEFAULT_MESSAGE = "Google sign-in is not configured for this deployment."
+
+
+class GoogleTokenUnavailableError(AppError):
+    """Raised when a stored Gmail credential cannot be decrypted.
+
+    Maps to 503 Service Unavailable. The usual cause is a rotated or replaced
+    ``GOOGLE_TOKEN_ENCRYPTION_KEY``; reconnecting the mailbox re-encrypts it
+    under the current key. The underlying decryption error is logged
+    server-side and never returned.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "GOOGLE_TOKEN_UNAVAILABLE"
+
+    DEFAULT_MESSAGE = (
+        "The stored Gmail credentials cannot be read with the current "
+        "encryption key. Reconnect the mailbox."
+    )
+
+
+class GmailScopeMissingError(AppError):
+    """Raised when a connected mailbox lacks a required Gmail scope."""
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "GMAIL_SCOPE_MISSING"
+
+    DEFAULT_MESSAGE = (
+        "The connected Gmail mailbox does not permit sending. Reconnect Gmail to grant send access."
+    )
+
+
+class EmailSendConflictError(AppError):
+    """Raised when an idempotency key cannot be safely reused."""
+
+    status_code = status.HTTP_409_CONFLICT
+    error_code = "EMAIL_SEND_CONFLICT"
+
+
+class EmailSendUncertainError(EmailSendConflictError):
+    """Raised when a send's outcome could not be established."""
+
+    error_code = "EMAIL_SEND_UNCERTAIN"
 
 
 def register_exception_handlers(app: FastAPI) -> None:

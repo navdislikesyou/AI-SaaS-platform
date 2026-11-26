@@ -218,8 +218,10 @@ async def test_platform_agents_are_registered_under_their_stable_names() -> None
 
     registry = build_registry(Settings(environment="development"))
 
-    assert len(registry) == 3
-    for name in ("knowledge", "automation", "performance"):
+    assert len(registry) == 4
+    for name in ("knowledge", "automation", "performance", "employee_insights"):
         assert registry.has(name)
 
     assert registry.get("performance").capabilities() == []
+    caps = registry.get("employee_insights").capabilities()
+    assert caps == ["extract_feedback", "employee_summary", "sync_gmail"]

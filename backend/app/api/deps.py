@@ -7,10 +7,11 @@ so that routers do not need to change when auth is enabled/disabled.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,18 +20,31 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_async_session
 from app.models import User, UserRole
 
+
+async def get_async_session_optional() -> AsyncIterator[AsyncSession | None]:
+    """Return an async session, or None when the database is not initialized.
+
+    Used by endpoints that can operate without a DB in limited/test contexts.
+    """
+    try:
+        async for session in get_async_session():
+            yield session
+    except RuntimeError:
+        yield None
+
+
 #: Global singletons (initialized during app startup).
 _registry: AgentRegistry | None = None
 _orchestrator: Any = None  # Orchestrator type; kept here for process-wide access.
 _job_manager: Any = None  # JobManager type; kept here for process-wide access.
 
-#: OAuth2 scheme for access JWT. Points at login endpoint for FastAPI docs.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
-
-
-#: OAuth2 scheme that returns the token if present, None otherwise.
-#: Used by endpoints that support both authenticated and unauthenticated access.
-oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+#: HTTP Bearer scheme for access JWTs. Missing credentials are handled by the
+#: dependencies below so they retain the API's existing 401 response behavior.
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="Access token returned by POST /api/v1/auth/login.",
+)
 
 
 def user_context_for(user: User | None) -> dict[str, Any] | None:
@@ -59,7 +73,7 @@ def user_context_for(user: User | None) -> dict[str, Any] | None:
 
 
 async def get_current_user_from_token_optional_principal(
-    token: str = Depends(oauth2_scheme_optional),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_async_session),
     settings: Settings = Depends(get_settings),
 ) -> User | None:
@@ -69,11 +83,11 @@ async def get_current_user_from_token_optional_principal(
     returns ``None`` when no valid token is supplied.  This is intended for
     endpoints that wish to support both authenticated and unauthenticated access.
     """
-    if not token:
+    if credentials is None:
         return None
 
     try:
-        payload = await _verify_jwt_token(token, settings)
+        payload = await _verify_jwt_token(credentials.credentials, settings)
     except HTTPException:
         return None
 
@@ -170,7 +184,6 @@ def init_job_manager(manager: Any) -> None:
         manager: The job manager to share across requests.
     """
     global _job_manager
-
     _job_manager = manager
 
 
@@ -210,7 +223,7 @@ def get_document_upload_service(settings: Settings = Depends(get_settings_dep)) 
     """Return the process-wide Knowledge document upload service.
 
     The Knowledge Agent ingests documents, so it keeps the document allowlist
-    (``.pdf``, ``.docx``, ``.txt``) and the knowledge upload directory.
+    (``.pdf``, ``.docx``, and ``.txt``) and the knowledge upload directory.
 
     Args:
         settings: Application settings, used for the upload directory and the
@@ -333,7 +346,7 @@ async def _verify_jwt_token(token: str, settings: Settings) -> dict[str, Any]:
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Access token has expired",
+            detail="Authentication token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except Exception as exc:
@@ -345,7 +358,7 @@ async def _verify_jwt_token(token: str, settings: Settings) -> dict[str, Any]:
 
 
 async def get_current_user_from_token(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_async_session),
     settings: Settings = Depends(get_settings),
 ) -> User:
@@ -362,7 +375,14 @@ async def get_current_user_from_token(
     Raises:
         HTTPException 401: If no valid token or user not found/inactive.
     """
-    payload = await _verify_jwt_token(token, settings)
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = await _verify_jwt_token(credentials.credentials, settings)
     user_id: str | None = payload.get("sub")
     token_version: int = payload.get("token_version", 0) or 0
 
@@ -453,7 +473,7 @@ async def get_refresh_token_from_cookie(request: Request) -> str | None:
 
 
 async def get_current_user_from_token_optional(
-    token: str = Depends(oauth2_scheme_optional),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_async_session),
     settings: Settings = Depends(get_settings),
 ) -> User | None:
@@ -463,8 +483,11 @@ async def get_current_user_from_token_optional(
     returns ``None`` when no valid token is supplied.  This is intended for
     endpoints that wish to support both authenticated and unauthenticated access.
     """
+    if credentials is None:
+        return None
+
     try:
-        payload = await _verify_jwt_token(token, settings)
+        payload = await _verify_jwt_token(credentials.credentials, settings)
     except HTTPException:
         return None
 

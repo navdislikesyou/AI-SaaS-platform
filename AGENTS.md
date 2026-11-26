@@ -13,7 +13,7 @@ depend on agent internals; agents plug in through adapters.
 Current scope:
 - **Backend** — `backend/app` (FastAPI, agent abstraction, registry, orchestrator,
   Performance job API). Live.
-- **Agents** — all three are implemented and live in this repository:
+- **Agents** — all four are implemented and live in this repository:
   - **Knowledge** — RAG document Q&A. `backend/knowledge_agent/`. Served
     synchronously through `POST /api/v1/agents/execute`.
   - **Automation** — productivity requests, drafting only. `backend/automation_agent/`.
@@ -21,6 +21,9 @@ Current scope:
   - **Performance** — data analytics. `backend/performance_agent/`. Served as
     background jobs through `POST /api/v1/performance/jobs`, not through
     `/agents/execute`.
+  - **Employee Insights** — employee feedback sentiment analysis and org-scoped analytics.
+    `backend/employee_insights/`. Served synchronously through
+    `POST /api/v1/agents/execute` and `/api/v1/employee-insights/*`.
 
 The synchronous agents couple to real agent code in
 `backend/app/agents/adapters/`. Performance couples in
@@ -30,8 +33,11 @@ CPU-bound and long running.
 ## Do Not
 
 - Change the Knowledge Agent's retrieval or generation behaviour without being asked
-- Implement Gmail, Google Calendar, email sending, or scheduling — the
-  Automation Agent drafts and must stay draft-only
+- Implement Gmail, Google Calendar, email sending, or scheduling inside the
+  Automation *Agent* package (`backend/automation_agent/`) — it drafts and must
+  stay draft-only. Email sending is performed by the backend through the
+  privileged `send_email` operation on the Automation adapter, after strict
+  explicit confirmation, and only by manager/admin users
 - Add ML (prediction, classification, regression) to the Performance Analyzer
   — it is data analytics only
 - Add database, auth, RBAC, or frontend code without being asked
@@ -41,6 +47,9 @@ CPU-bound and long running.
 - Expose stack traces, raw exception text, or internal filesystem paths in API
   responses
 - Commit `.env`, `.venv/`, model weights, or anything else gitignored
+- Bypass organization-level tenant isolation or RBAC checks
+- Weaken Gmail recipient verification or allow uploaded contacts to bypass
+  organization-user verification
 
 ## Repository Layout
 
@@ -50,7 +59,7 @@ backend/
     main.py            app factory, lifespan, CORS, middleware
     api/
       deps.py          shared dependencies (auth seam)
-      v1/              router.py, health.py, agents.py, performance.py
+      v1/              router.py, health.py, agents.py, performance.py, employee_insights.py
     core/
       config.py        settings; the only module reading env vars
       logging_config.py  logging + request-id correlation
@@ -61,14 +70,15 @@ backend/
       base.py          AgentAdapter ABC, concurrency limiting, placeholder base
       registry.py      AgentRegistry
       factory.py       default registry from settings
-      adapters/        knowledge, automation, performance
+      adapters/        knowledge, automation, performance, employee_insights
     services/
       orchestrator.py  dispatch only
       job_manager.py   in-process background jobs for Performance
       dataset_upload.py  browser dataset uploads; resolves dataset_id to a path
-  knowledge_agent/     RAG agent: loaders, splitter, embeddings, vector store
-  automation_agent/    Automation agent: parser, employee directory, drafting
-  performance_agent/   data analytics: dataset, analyzers, visualizations, insights
+  knowledge_agent     RAG agent: loaders, splitter, embeddings, vector store
+  automation_agent    Automation agent: parser, employee directory, drafting
+  performance_agent   data analytics: dataset, analyzers, visualizations, insights
+  employee_insights   employee feedback sentiment analysis and analytics
   tests/               mirrors app/; fakes.py, conformance.py
   requirements.txt
   requirements-agents.txt  agent dependencies, installed separately
@@ -91,6 +101,9 @@ pytest                              # all
 pytest tests/test_agents_api.py     # one file
 pytest tests/test_registry.py -k unknown   # one test by keyword
 pytest tests/conformance.py         # agent contract suite
+pytest tests/test_tenant_isolation.py    # tenant isolation tests
+pytest tests/test_automation_adapter.py  # adapter tests
+pytest tests/test_automation_directory_resolution.py  # directory resolution tests
 
 # Lint, format, types
 ruff check app tests
@@ -150,41 +163,6 @@ mypy app
           UnknownAgentError: If the name is not registered.
       """
   ```
-
-### Layering
-- Routers own HTTP: status codes, auth dependencies, request/response shapes.
-  They never import an agent implementation or an adapter's internals.
-- The orchestrator resolves and dispatches. It contains no agent logic and
-  chooses no LLM-based routing in v1 — the client names the agent.
-- Adapters are the only place coupled to real agent code for the synchronous
-  agents. Performance couples in `app/services/job_manager.py` instead.
-- All real-agent coupling stays inside `app/agents/adapters/` or
-  `app/services/job_manager.py`.
-
-### Error Handling
-- Raise `AppError` subclasses (`core/exceptions.py`); never bare `except:`.
-- Map domain errors to status codes in one place only.
-  `UnknownAgentError` → 404, `UnknownOperationError` → 404,
-  `JobNotFoundError` → 404, `DatasetNotFoundError` → 404,
-  `DirectoryNotFoundError` → 404, `ValidationFailedError` → 422,
-  `AgentExecutionError` → 502, `AgentUnavailableError` → 503,
-  `AgentTimeoutError` → 504.
-- Log full tracebacks server-side; never return them. Error bodies carry only
-  `code`, `message`, `details`, and `request_id`.
-- Adapters must not log or echo credentials.
-
-### Logging
-- Use `logging.getLogger(__name__)`. No `print()` in library code.
-- Never log passwords, API keys, tokens, or request bodies.
-- `LOG_FORMAT=json` for shipping; every record includes the request id.
-
-### Async and API
-- `async def` endpoints. Agents run in a worker thread via
-  `anyio.to_thread.run_sync` so blocking inference never stalls the loop.
-- Set `response_model` on every route.
-- New dependencies go in `api/deps.py`. Auth is added there, not per route.
-- Status codes: 200 read, 202 accepted, 400 bad input, 404 missing,
-  409 conflict, 422 validation, 502 agent failure, 503 unavailable, 504 timeout.
 
 ## Agent Integration
 
@@ -251,15 +229,103 @@ Redact filesystem paths from any error text returned to a client. Analyzer and
 loader exceptions carry raw `str(error)`, which can contain server paths.
 Sanitize at the API boundary and keep the full text in server logs.
 
-## Tests
+## Email Sending
 
-- One file per module, mirroring `app/` under `tests/`.
-- Name tests `test_<behavior>` — describe the outcome, not the call.
-- Use fakes from `tests/fakes.py`: `EchoAgent`, `UnavailableAgent`,
-  `ExplodingAgent`, `SlowAgent`. Never load a real model or hit the network.
-- Keep every test runnable on CPU without a GPU.
-- Assert on status codes and the standard envelope, not on log text.
-- Use `pytest.raises(..., match=...)` for error paths.
+The Automation adapter advertises a privileged `send_email` operation in
+addition to `draft_action` and `draft_html`. Drafting never sends. Sending
+requires:
+
+- an authenticated manager or administrator (employees get 403);
+- a connected organization-scoped Gmail mailbox with the `gmail.send` scope
+  (reauthorize through the existing OAuth flow if only `gmail.readonly` is
+  granted);
+- a strict backend `confirm is True` (truthy strings/numbers do not count);
+- a valid recipient list, subject, and HTML body within configured limits;
+- an idempotency key, which makes retries after a timeout replay the recorded
+  outcome instead of resending.
+
+The backend sender lives in `app/services/gmail_send.py` and reuses the
+existing connection, Fernet encryption, refresh, and `invalid_grant` handling.
+It claims an `email_sends` row before calling Gmail, so an uncertain outcome
+(stuck `sending`/`uncertain`) is never blindly retried. All sends are
+audited (sender, organization, recipient, subject, timestamp, outcome) without
+the body or any credential. The Automation Agent package stays draft-only.
+
+## Phase 4: Organization-Scoped Employee Directory
+
+### Session Threading
+
+Session propagation is threaded through the complete call chain:
+
+```
+API layer (get_async_session()) -> orchestrator.execute() -> adapter.run() -> _call_service() -> AutomationService.execute()
+```
+
+- The async SQLAlchemy session is passed from the API route through orchestrator, adapter, and service.
+- Organization-scoped queries use the authenticated user's `organization_id`.
+- The execute endpoint uses an optional session dependency so DB-independent tests can still run; services/adapters that require org-scoped DB resolution reject missing session safely.
+
+### Organization Isolation
+
+- Organization A never receives Organization B's employees.
+- Organization ID is **always derived from the authenticated principal**, never from client-supplied data.
+- Client-supplied organization IDs are ignored at every layer.
+- All employee queries filter by the authenticated user's `organization_id`.
+
+### Recipient / Attendee Resolution
+
+- Only **active** employees (`is_active=True`) are included.
+- Frontend sends employee UUIDs (`employee_ids`); backend resolves email/name from active org `User` records.
+- Arbitrary email-only recipients, unknown UUIDs, cross-org UUIDs, and inactive users are rejected.
+- Meeting attendees are validated against active org users; attendee email/name/user_id are derived from DB.
+- No packaged `employees.json`. No `automation_agent/directory.py` fallback. No AutomationAgent uploaded-directory recipient selection.
+
+### Security Rules (mandatory)
+
+- **Never trust client-supplied organization IDs.** Derive organization context from authenticated principals only.
+- **Never expose another organization's data.** All queries scoped to authenticated organization.
+- **Exclude inactive employees** where required.
+- **Never weaken Gmail recipient verification.** Uploaded contacts cannot bypass organization-user verification.
+- **Never send real emails during automated tests.**
+- **Do not bypass existing authorization checks.** Manager/admin RBAC enforced on relevant routes.
+
+### Email / Meeting Workflows
+
+- Drafting (`draft_action`, `draft_html`) produces drafts only; no send side effects.
+- `send_email` requires manager/admin, strict `confirm is True`, idempotency key, valid org employee UUIDs, and DB-derived recipients.
+- AXON meeting records are created/rescheduled/cancelled through meeting APIs. AXON meeting records do **not** automatically imply external Google Calendar synchronization.
+- Invitation sending uses existing Gmail infrastructure with confirmation and idempotency; tests mock Gmail operations.
+
+### Legacy / Retained Shared Endpoints
+
+- `/api/v1/automation/directories` upload/list/detail endpoints remain as shared legacy infrastructure pending dependency analysis. They are not used for AutomationAgent recipient selection.
+
+### Example: Employee Directory Flow
+
+```http
+GET /api/v1/automation/employees
+Authorization: Bearer <jwt-token>
+```
+
+Response: 200 with active employees in the authenticated user's organization.
+
+```http
+POST /api/v1/agents/execute
+{
+  "agent": "automation",
+  "operation": "send_email",
+  "payload": {
+    "employee_ids": ["<org-user-uuid>"],
+    "subject": "Hello",
+    "html_body": "<p>Hello</p>",
+    "confirm": true,
+    "idempotency_key": "unique-key"
+  }
+}
+```
+
+Backend resolves recipient email/name from the authenticated organization's active User records.
+
 
 Agent-integration tests stay opt-in behind the enable flags
 (`tests/test_agent_integration.py`) so CI never loads a model. Performance job

@@ -9,6 +9,7 @@ them.
 from __future__ import annotations
 
 from app.agents.adapters.automation import AutomationAgentAdapter
+from app.agents.adapters.employee_insights import EmployeeInsightsAgentAdapter
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.base import AgentAdapter
@@ -59,4 +60,8 @@ def default_adapters(settings: Settings) -> list[AgentAdapter]:
             settings=settings,
         ),
         PerformanceAgentAdapter(enabled=settings.performance_agent_enabled),
+        EmployeeInsightsAgentAdapter(
+            enabled=settings.employee_insights_agent_enabled,
+            settings=settings,
+        ),
     ]

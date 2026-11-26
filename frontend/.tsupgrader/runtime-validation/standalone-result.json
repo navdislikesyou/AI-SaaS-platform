@@ -1,0 +1,105 @@
+{
+  "planHash": "25188aef09ccf201a0e3a41b33cbf430217425c4b5d9b33b2261af4385eaed26",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-10-31T16:18:09.9673457Z",
+  "retryCount": 1,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 0,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "production-build",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E project@0.0.0 build\r\n\u003E vite build\r\n\r\n\u001B[36mvite v8.2.2 \u001B[32mbuilding client environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 2283 modules transformed.\r\nrendering chunks...\r\ncomputing gzip size...\r\ndist/index.html                   0.97 kB \u2502 gzip:   0.52 kB\r\ndist/assets/index-DQ5I_nR-.css   76.03 kB \u2502 gzip:  13.34 kB\r\ndist/assets/index-CXyroP04.js   582.59 kB \u2502 gzip: 162.82 kB\r\n\r\n\u001B[32m\u2713 built in 1.11s\u001B[39m\r\n\u001B[33m[plugin builtin:vite-reporter] \r\n(!) Some chunks are larger than 500 kB after minification. Consider:\r\n- Using dynamic import() to code-split the application\r\n- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting\r\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\u001B[39m\r\n",
+        "durationMs": 2283
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": false,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 1,
+        "outputSample": "\r\n\u003E project@0.0.0 test\r\n\u003E vitest run\r\n\r\n\r\n RUN  v4.1.11 C:/Saas Platform/AI-SaaS-platform-git/frontend\r\n\r\n(node:16656) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\r\n(Use \u0060node --trace-warnings ...\u0060 to show where the warning was created)\r\n \u276F src/services/api.test.js (19 tests | 1 failed) 22ms\r\n     \u00D7 never writes the access token to web storage 4ms\r\n(node:16656) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\r\n(Use \u0060node --trace-warnings ...\u0060 to show where the warning was created)\r\n \u276F src/pages/AutomationAIPage.test.jsx (23 tests | 23 failed) 61ms\r\n     \u00D7 offers the upload control and a default directory option 12ms\r\n     \u00D7 restricts the picker to JSON and CSV 1ms\r\n     \u00D7 disables the upload button until a file is chosen 1ms\r\n     \u00D7 shows the selected filename before uploading 1ms\r\n     \u00D7 previews the uploaded records and reports the accepted count 7ms\r\n     \u00D7 makes the uploaded directory selectable without a refetch 2ms\r\n     \u00D7 surfaces a backend rejection and claims no success 4ms\r\n     \u00D7 reports an unreachable backend plainly 1ms\r\n     \u00D7 warns about a rejected directory without hiding the upload control 1ms\r\n     \u00D7 states the accepted formats and rejects spreadsheets implicitly 1ms\r\n     \u00D7 marks name and email as required and gives the file limits 1ms\r\n     \u00D7 describes the limits of name matching rather than overstating it 3ms\r\n     \u00D7 repeats that a directory produces a draft and nothing else 1ms\r\n     \u00D7 keeps the CSV example collapsed until asked for 1ms\r\n     \u00D7 keeps the JSON example collapsed until asked for 1ms\r\n     \u00D7 leaves the two examples independent 5ms\r\n     \u00D7 places the guidance next to the directory upload control 1ms\r\n     \u00D7 omits directory_id from the payload when the default is selected 1ms\r\n     \u00D7 sends the selected directory_id in the payload 1ms\r\n     \u00D7 reports which directory produced the draft 1ms\r\n     \u00D7 shows the default directory was used when nothing is selected 1ms\r\n     \u00D7 does not present a failed request as a completed one 0ms\r\n     \u00D7 keeps the draft-only promise visible alongside the directory controls 1ms\r\n(node:16656) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\r\n(Use \u0060node --trace-warnings ...\u0060 to show where the warning was created)\r\n(node:16656) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\r\n(Use \u0060node --trace-warnings ...\u0060 to show where the warning was created)\r\n \u276F src/pages/KnowledgeAIPage.test.jsx (18 tests | 18 failed) 41ms\r\n     \u00D7 opens on the ingest tab with the upload control visible 13ms\r\n     \u00D7 restricts the picker to the accepted document types 2ms\r\n     \u00D7 disables the upload button until a file is chosen 2ms\r\n     \u00D7 shows the selected filename before uploading 4ms\r\n     \u00D7 shows a loading state while indexing and disables the button 1ms\r\n     \u00D7 confirms success only after the backend reports the document indexed 1ms\r\n     \u00D7 shows the backend error message and no success message on failure 1ms\r\n     \u00D7 reports an unreachable backend in terms the user can act on 1ms\r\n     \u00D7 clears a stale error when a different file is chosen 1ms\r\n     \u00D7 states the accepted formats and the size limit 1ms\r\n     \u00D7 separates what is required from what is only recommended 1ms\r\n     \u00D7 does not claim a citation verifies the answer 0ms\r\n     \u00D7 keeps the example structure collapsed until asked for 0ms\r\n     \u00D7 presents the example as a recommendation, not a template 1ms\r\n     \u00D7 places the guidance inside the document ingestion card 1ms\r\n     \u00D7 offers an already indexed document for questioning 1ms\r\n     \u00D7 does not offer a document that failed to index 1ms\r\n     \u00D7 prompts for an upload when nothing is indexed 1ms\r\n \u276F src/pages/PerformanceAIPage.test.jsx (26 tests | 26 failed) 66ms\r\n     \u00D7 selects the packaged sample before anything is uploaded 22ms\r\n     \u00D7 offers every dataset the backend reports 2ms\r\n     \u00D7 names the dataset that will be analysed 1ms\r\n     \u00D7 offers a file control limited to CSV and XLSX 2m\n\u2026[truncated]",
+        "durationMs": 23228,
+        "testResults": {
+          "testFramework": "vitest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 231,
+          "testsPassed": 163,
+          "testsFailed": 68,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      },
+      {
+        "name": "dev-server-serves-home",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "HTTP 200\n\u003C!doctype html\u003E\r\n\u003Chtml lang=\u0022en\u0022\u003E\r\n  \u003Chead\u003E\n    \u003Cscript type=\u0022module\u0022\u003Eimport { injectIntoGlobalHook } from \u0022/@react-refresh\u0022;\ninjectIntoGlobalHook(window);\nwindow.$RefreshReg$ = () =\u003E {};\nwindow.$RefreshSig$ = () =\u003E (type) =\u003E type;\u003C/script\u003E\n\n    \u003Cscript type=\u0022module\u0022 src=\u0022/@vite/client\u0022\u003E\u003C/script\u003E\n\r\n    \u003Cmeta charset=\u0022UTF-8\u0022 /\u003E\r\n    \u003Clink rel=\u0022icon\u0022 type=\u0022image/svg\u002Bxml\u0022 href=\u0022/favicon.svg\u0022 /\u003E\r\n    \u003Cmeta name=\u0022viewport\u0022 content=\u0022width=device-width, initial-scale=1.0\u0022 /\u003E\r\n    \u003Cmeta name=\u0022description\u0022 content=\u0022The AI-powered organizational workspace. One platform. Five specialized AI agents. One intelligent orchestrator.\u0022 /\u003E\r\n    \u003Ctitle\u003EAI Operating Workspace\u003C/title\u003E\r\n    \u003Clink rel=\u0022preconnect\u0022 href=\u0022https://fonts.googleapis.com\u0022 /\u003E\r\n    \u003Clink rel=\u0022preconnect\u0022 href=\u0022https://fonts.gstatic.com\u0022 crossorigin /\u003E\r\n    \u003Clink href=\u0022https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800\u0026family=Inter:wght@300;400;500;600\u0026family=JetBrains\u002BMono:wght@300;400;500\u0026display=swap\u0022 rel=\u0022stylesheet\u0022 /\u003E\r\n  \u003C/head\u003E\r\n  \u003Cbody\u003E\r\n    \u003Cdiv id=\u0022root\u0022\u003E\u003C/div\u003E\r\n    \u003Cscript type=\u0022module\u0022 src=\u0022/src/main.jsx?t=1793462888707\u0022\u003E\u003C/script\u003E\r\n  \u003C/body\u003E\r\n\u003C/html\u003E\r\n",
+        "durationMs": 24
+      }
+    ],
+    "executions": [
+      {
+        "source": "production-build",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": "C:\\Saas Platform\\AI-SaaS-platform-git\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "C:\\Saas Platform\\AI-SaaS-platform-git\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "dev-server-serves-home",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "dev",
+          "--",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "5175",
+          "--strictPort"
+        ],
+        "cwd": "C:\\Saas Platform\\AI-SaaS-platform-git\\frontend",
+        "env": {
+          "CHOKIDAR_USEPOLLING": "true"
+        },
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

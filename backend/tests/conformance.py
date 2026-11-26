@@ -10,12 +10,14 @@ from __future__ import annotations
 import pytest
 
 from app.agents.adapters.automation import AutomationAgentAdapter
+from app.agents.adapters.employee_insights import EmployeeInsightsAgentAdapter
 from app.agents.adapters.knowledge import KnowledgeAgentAdapter
 from app.agents.adapters.performance import PerformanceAgentAdapter
 from app.agents.base import AgentAdapter, PlaceholderAgentAdapter
 from app.core.exceptions import (
     AgentExecutionError,
     AgentUnavailableError,
+    ForbiddenError,
     UnknownOperationError,
     ValidationFailedError,
 )
@@ -25,6 +27,7 @@ from app.core.exceptions import (
 PLACEHOLDER_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
 ]
 
 #: Adapters that are catalog entries only. The Performance Analyzer is
@@ -39,6 +42,7 @@ CATALOG_ONLY_ADAPTERS = [
 ALL_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
     PerformanceAgentAdapter,
 ]
 
@@ -231,6 +235,7 @@ async def test_adapter_rejects_unknown_operation_when_available(
 SERVICE_BACKED_ADAPTERS = [
     KnowledgeAgentAdapter,
     AutomationAgentAdapter,
+    EmployeeInsightsAgentAdapter,
 ]
 
 #: A payload that satisfies every operation on the adapters above.
@@ -238,16 +243,31 @@ VALID_PAYLOAD = {
     "file_path": "hr.pdf",
     "question": "What is the leave policy?",
     "instruction": "Schedule a sprint planning on 5 March with Navneet",
+    "email_text": "Navneet did an excellent job completing the project.",
+    "employee_id": "EMP-001",
+    "max_results": 10,
+    "recipients": [{"name": "Navneet", "email": "navneet@example.test"}],
+    "subject": "Sprint planning",
+    "html_body": "<p>Hello</p>",
+    "confirm": True,
+    "idempotency_key": "test-idempotency-key",
 }
 
 #: Principal handed to the adapter under test. The adapters authorize the
 #: caller before they reach the agent, so a principal is part of the contract
-#: an implementation has to satisfy.
+#: an implementation has to satisfy. It is an administrator because the
+#: capability list now contains operations that only manager-level callers
+#: may reach; the employee case is asserted separately below.
 PRINCIPAL = {
     "user_id": "test-user-1",
     "organization_id": "test-org-1",
-    "role": "employee",
+    "role": "admin",
 }
+
+#: Operations that touch the organisation's shared mailbox or send mail on its
+#: behalf and therefore refuse an employee principal whatever else the payload
+#: contains.
+PRIVILEGED_OPERATIONS = frozenset({"sync_gmail", "send_email"})
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
@@ -348,6 +368,30 @@ async def test_blank_payload_value_raises_a_validation_error(
     for operation in adapter.capabilities():
         with pytest.raises(ValidationFailedError):
             await adapter.execute(operation, blank, user_context=PRINCIPAL)
+
+
+@pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)
+async def test_privileged_operations_refuse_an_employee_principal(
+    adapter_cls: type[AgentAdapter],
+) -> None:
+    """An operation that reads the shared mailbox is manager-and-above only.
+
+    The connection routes are gated by ``require_manager``; the execution
+    path reaches the agent without those dependencies, so the same rule has to
+    be enforced by the adapter itself. An employee must get a 403 rather than
+    silently receiving another user's mailbox.
+
+    Args:
+        adapter_cls: The adapter class under test.
+    """
+    adapter = connected_adapter(adapter_cls)
+    employee = {**PRINCIPAL, "role": "employee"}
+
+    for operation in sorted(PRIVILEGED_OPERATIONS.intersection(adapter.capabilities())):
+        with pytest.raises(ForbiddenError) as exc_info:
+            await adapter.execute(operation, dict(VALID_PAYLOAD), user_context=employee)
+
+        assert exc_info.value.status_code == 403
 
 
 @pytest.mark.parametrize("adapter_cls", SERVICE_BACKED_ADAPTERS)

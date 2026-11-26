@@ -13,11 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from alembic import command
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from app.core.config import get_settings
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -87,18 +87,25 @@ def test_upgrade_head_is_safe_on_a_database_that_already_has_the_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A database built by ``create_all`` can still be migrated.
+    """A legacy bootstrap with the core tables can still be migrated.
 
-    The tables are created only when they are absent, so an operator who
-    bootstrapped a database before the migrations existed is not stuck.
+    The baseline predates the Employee Insights feedback table, so its
+    migration can add that table without colliding with existing core tables.
     """
-    from app.models import Base
+    from app.models import Base, Organization, RefreshToken, User
 
     url = f"sqlite:///{tmp_path / 'created.db'}"
 
     engine = create_engine(url)
     try:
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(
+            engine,
+            tables=[
+                Organization.__table__,
+                User.__table__,
+                RefreshToken.__table__,
+            ],
+        )
     finally:
         engine.dispose()
 

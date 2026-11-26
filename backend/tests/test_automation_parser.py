@@ -119,15 +119,21 @@ class StubLLM:
 
 @pytest.fixture
 def agent() -> AutomationAgent:
-    """Return an AutomationAgent with a stub LLM and the real roster.
+    """Return an AutomationAgent with a stub LLM and a test roster.
 
-    The employee directory is the packaged ``employees.json``, so the attendee
-    tests reflect the names the agent actually ships with.
+    The roster is in-memory to avoid dependency on the removed packaged
+    employees.json file.
 
     Returns:
         An agent ready to parse instructions.
     """
-    return AutomationAgent(llm=StubLLM())
+    roster = [
+        {"name": "Omkar Shenwai", "email": "omkar.shenwai2023@ssipmt.com"},
+        {"name": "Navneet Verma", "email": "navneet.verma2023@ssipmt.com"},
+        {"name": "Pulkita Verma", "email": "pulkita.verma2023@ssipmt.com"},
+        {"name": "Mohammed Ashhar Khan", "email": "mohammed.ashhar.khan2023@ssipmt.com"},
+    ]
+    return AutomationAgent(llm=StubLLM(), employees=roster)
 
 
 # --------------------------------------------------------------------------
@@ -668,7 +674,8 @@ def test_orientation_email_prompts_for_an_orientation() -> None:
     back described as a project meeting.
     """
     llm = RecordingLLM()
-    agent = AutomationAgent(llm=llm)
+    roster = [{"name": "Omkar Shenwai", "email": "omkar.shenwai2023@ssipmt.com"}]
+    agent = AutomationAgent(llm=llm, employees=roster)
 
     agent.execute(
         "Schedule an employee orientation on 15 May 2025 at 10:00 AM "
@@ -689,7 +696,8 @@ def test_email_greets_the_resolved_employee_by_name() -> None:
     when the employee had been resolved from the directory.
     """
     llm = RecordingLLM()
-    agent = AutomationAgent(llm=llm)
+    roster = [{"name": "Omkar Shenwai", "email": "omkar.shenwai2023@ssipmt.com"}]
+    agent = AutomationAgent(llm=llm, employees=roster)
 
     agent.execute("Schedule an employee orientation for Omkar tomorrow at 10 AM")
 
@@ -699,7 +707,7 @@ def test_email_greets_the_resolved_employee_by_name() -> None:
 def test_email_without_a_recipient_keeps_the_team_greeting() -> None:
     """With nobody resolved there is no name to greet, so the fallback stands."""
     llm = RecordingLLM()
-    agent = AutomationAgent(llm=llm)
+    agent = AutomationAgent(llm=llm, employees=[])
 
     agent.execute("Schedule a sprint planning for 5 March at 10 AM")
 

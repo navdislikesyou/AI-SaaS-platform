@@ -588,3 +588,39 @@ async def test_auth_endpoints_are_registered(
 
     # None of these may answer with "no such route".
     assert response.status_code != 404
+
+
+async def test_openapi_schema_uses_http_bearer_for_jwt_auth(client: AsyncClient) -> None:
+    """Protected operations use one HTTP Bearer scheme and login remains query-based."""
+    response = await client.get("/openapi.json")
+    assert response.status_code == 200
+    schema = response.json()
+
+    components = schema.get("components", {})
+    security_schemes = components.get("securitySchemes", {})
+    assert set(security_schemes) == {"BearerAuth"}
+    assert security_schemes["BearerAuth"]["type"] == "http"
+    assert security_schemes["BearerAuth"]["scheme"] == "bearer"
+    assert security_schemes["BearerAuth"]["bearerFormat"] == "JWT"
+
+    protected_operation = schema["paths"][ME_URL]["get"]
+    assert protected_operation["security"] == [{"BearerAuth": []}]
+
+    login_operation = schema["paths"][LOGIN_URL]["post"]
+    assert "security" not in login_operation
+    assert {parameter["name"] for parameter in login_operation["parameters"]} == {
+        "email",
+        "password",
+    }
+
+
+async def test_swagger_login_helper_attaches_access_token_to_bearer_auth(
+    client: AsyncClient,
+) -> None:
+    """Swagger docs provide the existing login flow and authorize protected requests."""
+    response = await client.get("/docs")
+
+    assert response.status_code == 200
+    assert "swagger-login-form" in response.text
+    assert "/api/v1/auth/login" in response.text
+    assert 'window.ui.preauthorizeApiKey("BearerAuth", result.access_token)' in response.text

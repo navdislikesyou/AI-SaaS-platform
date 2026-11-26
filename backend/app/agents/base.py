@@ -123,6 +123,7 @@ class AgentAdapter(abc.ABC):
         operation: str,
         payload: dict[str, Any],
         user_context: dict[str, Any] | None = None,
+        session: Any | None = None,
     ) -> dict[str, Any]:
         """Execute one operation against the underlying agent.
 
@@ -135,6 +136,8 @@ class AgentAdapter(abc.ABC):
             payload: Arbitrary JSON object supplied by the client.
             user_context: Optional dict with ``user_id``, ``organization_id``,
                 and ``role`` from the authenticated principal.
+            session: Request-scoped SQLAlchemy session for
+                organisation-scoped roster resolution.
 
         Returns:
             A JSON-serializable result object.
@@ -147,8 +150,7 @@ class AgentAdapter(abc.ABC):
         """
         if not self.is_available():
             raise AgentUnavailableError(
-                f"Agent '{self.name}' is registered but its implementation is "
-                f"not connected yet.",
+                f"Agent '{self.name}' is registered but its implementation is not connected yet.",
                 details={
                     "agent": self.name,
                     "status": "not_implemented",
@@ -168,7 +170,7 @@ class AgentAdapter(abc.ABC):
 
         logger.info("agent_execute_start agent=%s operation=%s", self.name, operation)
         try:
-            result = await self._invoke(operation, payload, user_context)
+            result = await self._invoke(operation, payload, user_context, session)
         except TimeoutError:
             logger.warning("agent_execute_timeout agent=%s operation=%s", self.name, operation)
             raise AgentTimeoutError(
@@ -196,6 +198,7 @@ class AgentAdapter(abc.ABC):
         operation: str,
         payload: dict[str, Any],
         user_context: dict[str, Any] | None = None,
+        session: Any | None = None,
     ) -> dict[str, Any]:
         """Run :meth:`run` in a worker thread with a timeout.
 
@@ -238,6 +241,7 @@ class AgentAdapter(abc.ABC):
                     operation,
                     payload,
                     user_context,
+                    session,
                     abandon_on_cancel=True,
                 )
         except BaseException:
@@ -259,8 +263,7 @@ class AgentAdapter(abc.ABC):
             return {}
         if not isinstance(raw, dict):
             raise AgentExecutionError(
-                f"Agent '{self.name}' returned {type(raw).__name__}; a JSON object "
-                "was expected.",
+                f"Agent '{self.name}' returned {type(raw).__name__}; a JSON object was expected.",
                 details={"agent": self.name, "operation": operation},
             )
         return raw
@@ -353,6 +356,7 @@ class _Slot:
         operation: str,
         payload: dict[str, Any],
         user_context: dict[str, Any] | None = None,
+        session: Any | None = None,
     ) -> Any:
         """Call the agent function, then release the slot from this thread.
 
@@ -362,15 +366,39 @@ class _Slot:
             payload: The request payload.
             user_context: Optional dict with ``user_id``, ``organization_id``,
                 and ``role`` from the authenticated principal.
+            session: Optional request-scoped SQLAlchemy session.
 
         Returns:
             Whatever ``func`` returns.
+
+        Raises:
+            AgentExecutionError: If the agent returns a non-object result, or
+                if the coroutine cannot be resolved.
         """
         with self._lock:
             self._entered = True
 
         try:
-            return func(operation, payload, user_context=user_context)
+            try:
+                result = func(operation, payload, user_context=user_context, session=session)
+            except TypeError:
+                # Backward compat for run() implementations without session param.
+                result = func(operation, payload, user_context=user_context)
+            # If the result is a coroutine (async run method), resolve it.
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = loop.run_until_complete(result)
+                except RuntimeError:
+                    # No running event loop; asyncio.run() will create one.
+                    result = asyncio.run(result)
+            if not isinstance(result, dict):
+                raise AgentExecutionError(
+                    f"Agent '{self._agent}' returned {type(result).__name__}; "
+                    "a JSON object was expected.",
+                    details={"agent": getattr(self, "_agent", "unknown"), "operation": operation},
+                )
+            return result
         finally:
             self.release()
 
